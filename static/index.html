@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ATS Resume Optimizer — Local Resume Service</title>
+  <meta name="description" content="Upload your PDF resume and instantly receive a professionally reformatted, ATS-friendly PDF. 100% local, no data leaves your machine." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0b0f1a;
+      --surface:   #111827;
+      --card:      #1a2235;
+      --border:    #2a3347;
+      --accent:    #6366f1;        /* indigo */
+      --accent2:   #818cf8;
+      --success:   #22d3a1;
+      --danger:    #f87171;
+      --text:      #f0f4ff;
+      --muted:     #8899b8;
+      --radius:    14px;
+      --shadow:    0 8px 32px rgba(0,0,0,.45);
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Animated gradient background ──────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 15% 10%, rgba(99,102,241,.18) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 50% at 85% 80%, rgba(129,140,248,.12) 0%, transparent 55%),
+        radial-gradient(ellipse 50% 40% at 50% 50%, rgba(34,211,161,.06) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .page {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      gap: 2rem;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    .header {
+      text-align: center;
+    }
+
+
+    h1 {
+      font-size: clamp(1.9rem, 5vw, 3rem);
+      font-weight: 800;
+      line-height: 1.15;
+      background: linear-gradient(135deg, #f0f4ff 0%, #818cf8 50%, #6ee7b7 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .75rem;
+    }
+
+    .subtitle {
+      font-size: 1rem;
+      color: var(--muted);
+      max-width: 480px;
+      line-height: 1.6;
+    }
+
+    /* ── Card ───────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 560px;
+    }
+
+    /* ── Drop zone ──────────────────────────────────────────────────────── */
+    #drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 3rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s, transform .15s;
+      position: relative;
+    }
+
+    #drop-zone:hover,
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(99,102,241,.06);
+      transform: scale(1.01);
+    }
+
+    #drop-zone.has-file {
+      border-color: var(--success);
+      background: rgba(34,211,161,.05);
+    }
+
+    .drop-icon {
+      font-size: 3rem;
+      margin-bottom: .75rem;
+      display: block;
+      line-height: 1;
+    }
+
+    .drop-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: .35rem;
+    }
+
+    .drop-sub {
+      font-size: .85rem;
+      color: var(--muted);
+    }
+
+    #file-input { display: none; }
+
+    #file-name {
+      margin-top: 1rem;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: rgba(99,102,241,.12);
+      border: 1px solid rgba(99,102,241,.25);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: .875rem;
+      color: var(--accent2);
+      font-weight: 500;
+    }
+
+    #file-name.visible { display: flex; }
+    #file-name .fn-icon { font-size: 1.1rem; }
+    #file-name .fn-remove {
+      margin-left: auto;
+      cursor: pointer;
+      opacity: .6;
+      font-size: 1.1rem;
+      transition: opacity .15s;
+    }
+    #file-name .fn-remove:hover { opacity: 1; }
+
+    /* ── Submit button ──────────────────────────────────────────────────── */
+    #submit-btn {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent) 0%, #818cf8 100%);
+      color: #fff;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: .02em;
+      cursor: pointer;
+      transition: opacity .2s, transform .15s, box-shadow .2s;
+      box-shadow: 0 4px 18px rgba(99,102,241,.4);
+      position: relative;
+      overflow: hidden;
+    }
+
+    #submit-btn:hover:not(:disabled) {
+      opacity: .92;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 24px rgba(99,102,241,.55);
+    }
+
+    #submit-btn:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* ── Progress ───────────────────────────────────────────────────────── */
+    #progress-wrap {
+      display: none;
+      margin-top: 1.25rem;
+      flex-direction: column;
+      gap: .5rem;
+    }
+
+    #progress-wrap.visible { display: flex; }
+
+    .progress-bar-bg {
+      height: 6px;
+      background: var(--border);
+      border-radius: 100px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--success));
+      border-radius: 100px;
+      transition: width .4s ease;
+      animation: progress-anim 2s ease-in-out infinite alternate;
+    }
+
+    @keyframes progress-anim {
+      from { opacity: .7; }
+      to   { opacity: 1; }
+    }
+
+    .progress-label {
+      font-size: .8rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* ── Steps ──────────────────────────────────────────────────────────── */
+    .steps {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: .4rem;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      font-size: .85rem;
+      color: var(--muted);
+      transition: color .3s;
+    }
+
+    .step.active { color: var(--accent2); }
+    .step.done   { color: var(--success); }
+
+    .step-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid currentColor;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .65rem;
+      flex-shrink: 0;
+      transition: background .3s, border-color .3s;
+    }
+
+    .step.done .step-dot {
+      background: var(--success);
+      border-color: var(--success);
+      color: #0b0f1a;
+    }
+
+    .step.active .step-dot {
+      border-color: var(--accent2);
+      animation: pulse-dot 1s infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(129,140,248,.5); }
+      50%       { box-shadow: 0 0 0 5px rgba(129,140,248,0); }
+    }
+
+    /* ── Result / error ─────────────────────────────────────────────────── */
+    #result-box {
+      display: none;
+      margin-top: 1.25rem;
+      border-radius: 10px;
+      padding: 1rem 1.2rem;
+      font-size: .9rem;
+      align-items: center;
+      gap: .75rem;
+    }
+
+    #result-box.visible { display: flex; }
+
+    #result-box.success {
+      background: rgba(34,211,161,.1);
+      border: 1px solid rgba(34,211,161,.3);
+      color: var(--success);
+    }
+
+    #result-box.error {
+      background: rgba(248,113,113,.1);
+      border: 1px solid rgba(248,113,113,.3);
+      color: var(--danger);
+    }
+
+    #result-box .rb-icon { font-size: 1.4rem; flex-shrink: 0; }
+    #result-box .rb-text { flex: 1; line-height: 1.45; }
+    #result-box .rb-action { flex-shrink: 0; }
+
+    .dl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 8px;
+      background: var(--success);
+      color: #0b0f1a;
+      font-weight: 700;
+      font-size: .85rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+      transition: opacity .2s, transform .15s;
+    }
+
+    .dl-btn:hover { opacity: .88; transform: translateY(-1px); }
+
+    /* ── Feature pills ──────────────────────────────────────────────────── */
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: .6rem;
+    }
+
+    .feature {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 6px 14px;
+      font-size: .78rem;
+      color: var(--muted);
+    }
+
+    /* ── Spinner ────────────────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .65s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Footer ─────────────────────────────────────────────────────────── */
+    footer {
+      font-size: .75rem;
+      color: var(--muted);
+      opacity: .6;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- Header -->
+    <header class="header">
+      <h1>ATS Resume Optimizer</h1>
+      <p class="subtitle">
+        Upload your existing PDF resume. Our local pipeline extracts, parses, and
+        reformats it into a clean, ATS-friendly PDF — all on your machine.
+      </p>
+    </header>
+
+    <!-- Upload card -->
+    <main class="card" role="main">
+
+      <!-- Drop zone -->
+      <div id="drop-zone" role="button" tabindex="0" aria-label="Upload PDF resume"
+           onclick="document.getElementById('file-input').click()">
+        <span class="drop-icon" aria-hidden="true">📄</span>
+        <p class="drop-title">Drag &amp; drop your PDF here</p>
+        <p class="drop-sub">or click to browse &nbsp;·&nbsp; Max 20 MB</p>
+        <input type="file" id="file-input" accept=".pdf,application/pdf" />
+      </div>
+
+      <!-- Selected file name -->
+      <div id="file-name" role="status">
+        <span class="fn-icon" aria-hidden="true">📎</span>
+        <span id="fn-label">—</span>
+        <span class="fn-remove" id="fn-remove" role="button" tabindex="0"
+              aria-label="Remove selected file">✕</span>
+      </div>
+
+      <!-- Watermark Options -->
+      <div style="margin-top: 1.25rem; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.88rem; font-weight: 600; color: var(--text);">
+          <input type="checkbox" id="wm-toggle" checked style="accent-color: var(--accent); width: 16px; height: 16px;" onchange="document.getElementById('wm-text-wrap').style.display = this.checked ? 'block' : 'none'" />
+          Stamp Diagonal Watermark
+        </label>
+        <div id="wm-text-wrap" style="margin-top: 8px;">
+          <label style="display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 4px;">Watermark Text</label>
+          <input type="text" id="wm-text" value="DRAFT" placeholder="e.g. DRAFT, CONFIDENTIAL" style="width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 0.85rem; outline: none;" />
+        </div>
+      </div>
+
+      <!-- Submit -->
+      <button id="submit-btn" disabled onclick="processResume()">
+        Optimize My Resume →
+      </button>
+
+      <!-- Progress -->
+      <div id="progress-wrap" role="status" aria-live="polite">
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-label">
+          <span id="progress-text">Processing…</span>
+          <span id="progress-pct">0%</span>
+        </div>
+        <div class="steps" id="steps-list">
+          <div class="step" id="step-0">
+            <span class="step-dot">1</span> Uploading &amp; extracting text
+          </div>
+          <div class="step" id="step-1">
+            <span class="step-dot">2</span> Parsing resume sections
+          </div>
+          <div class="step" id="step-2">
+            <span class="step-dot">3</span> Generating ATS PDF
+          </div>
+          <div class="step" id="step-3">
+            <span class="step-dot">✓</span> Done
+          </div>
+        </div>
+      </div>
+
+      <!-- Result / error -->
+      <div id="result-box" role="status" aria-live="assertive">
+        <span class="rb-icon" id="rb-icon"></span>
+        <span class="rb-text" id="rb-text"></span>
+        <span class="rb-action" id="rb-action"></span>
+      </div>
+
+    </main>
+
+    <!-- Feature pills -->
+    <div class="features" aria-label="Feature highlights">
+      <div class="feature">🔒 No data leaves your machine</div>
+      <div class="feature">⚡ Under 30-second processing</div>
+      <div class="feature">🤖 Regex + NLP parsing</div>
+      <div class="feature">📋 ATS-optimised layout</div>
+      <div class="feature">🗑️ Auto cleanup after download</div>
+    </div>
+
+    <footer>
+      Resume Service v1.0 &nbsp;·&nbsp; FastAPI + PyMuPDF + spaCy + ReportLab
+    </footer>
+
+  </div>
+
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────
+    let selectedFile = null;
+    let isProcessing = false;
+
+    // ── Elements ──────────────────────────────────────────────────────────
+    const dropZone    = document.getElementById('drop-zone');
+    const fileInput   = document.getElementById('file-input');
+    const fileNameBox = document.getElementById('file-name');
+    const fnLabel     = document.getElementById('fn-label');
+    const fnRemove    = document.getElementById('fn-remove');
+    const submitBtn   = document.getElementById('submit-btn');
+    const progressWrap= document.getElementById('progress-wrap');
+    const progressFill= document.getElementById('progress-fill');
+    const progressTxt = document.getElementById('progress-text');
+    const progressPct = document.getElementById('progress-pct');
+    const resultBox   = document.getElementById('result-box');
+    const rbIcon      = document.getElementById('rb-icon');
+    const rbText      = document.getElementById('rb-text');
+    const rbAction    = document.getElementById('rb-action');
+
+    // ── File selection ─────────────────────────────────────────────────────
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length) selectFile(fileInput.files[0]);
+    });
+
+    function selectFile(file) {
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        showError('Please select a PDF file.');
+        return;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        showError('File too large. Maximum 20 MB.');
+        return;
+      }
+      selectedFile = file;
+      fnLabel.textContent = file.name;
+      fileNameBox.classList.add('visible');
+      dropZone.classList.add('has-file');
+      submitBtn.disabled = false;
+      hideResult();
+    }
+
+    fnRemove.addEventListener('click', (e) => { e.stopPropagation(); clearFile(); });
+    fnRemove.addEventListener('keydown', (e) => { if (e.key === 'Enter') clearFile(); });
+
+    function clearFile() {
+      selectedFile = null;
+      fileInput.value = '';
+      fileNameBox.classList.remove('visible');
+      dropZone.classList.remove('has-file');
+      submitBtn.disabled = true;
+      hideResult();
+    }
+
+    // ── Drag & drop ────────────────────────────────────────────────────────
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const dt = e.dataTransfer;
+      if (dt.files.length) selectFile(dt.files[0]);
+    });
+    dropZone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    // ── Progress simulation ────────────────────────────────────────────────
+    let progressInterval = null;
+    let currentStep = -1;
+
+    const STEPS = [
+      { id: 'step-0', label: 'Extracting text…',    pct: 25 },
+      { id: 'step-1', label: 'Parsing sections…',   pct: 55 },
+      { id: 'step-2', label: 'Generating PDF…',     pct: 85 },
+      { id: 'step-3', label: 'Finalising…',         pct: 98 },
+    ];
+
+    function startProgress() {
+      progressWrap.classList.add('visible');
+      currentStep = 0;
+      setProgress(0, 'Starting…');
+
+      let idx = 0;
+      progressInterval = setInterval(() => {
+        if (idx >= STEPS.length) { clearInterval(progressInterval); return; }
+        const s = STEPS[idx];
+        if (idx > 0) markStepDone(STEPS[idx - 1].id);
+        markStepActive(s.id);
+        setProgress(s.pct, s.label);
+        idx++;
+      }, 900);
+    }
+
+    function stopProgress(success) {
+      clearInterval(progressInterval);
+      STEPS.forEach(s => markStepDone(s.id));
+      setProgress(100, success ? 'Complete!' : 'Failed');
+    }
+
+    function setProgress(pct, label) {
+      progressFill.style.width = pct + '%';
+      progressTxt.textContent = label;
+      progressPct.textContent = pct + '%';
+    }
+
+    function markStepActive(id) {
+      const el = document.getElementById(id);
+      if (el) { el.classList.remove('done'); el.classList.add('active'); }
+    }
+
+    function markStepDone(id) {
+      const el = document.getElementById(id);
+      if (el) { el.classList.remove('active'); el.classList.add('done'); }
+    }
+
+    function resetSteps() {
+      STEPS.forEach(s => {
+        const el = document.getElementById(s.id);
+        if (el) { el.classList.remove('active', 'done'); }
+      });
+    }
+
+    // ── Upload & process ───────────────────────────────────────────────────
+    async function processResume() {
+      if (!selectedFile || isProcessing) return;
+      isProcessing = true;
+
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner"></span>Processing…';
+      hideResult();
+      resetSteps();
+      startProgress();
+
+      const wmToggle = document.getElementById('wm-toggle');
+      const wmTextInput = document.getElementById('wm-text');
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('watermark', wmToggle && wmToggle.checked ? 'true' : 'false');
+      formData.append('watermark_text', (wmTextInput && wmTextInput.value.trim()) || 'DRAFT');
+
+      try {
+        const resp = await fetch('/process', {
+          method: 'POST',
+          body: formData,
+        });
+
+        stopProgress(resp.ok);
+
+        if (resp.ok) {
+          // Trigger download
+          const blob = await resp.blob();
+          const cdHeader = resp.headers.get('content-disposition') || '';
+          const match = cdHeader.match(/filename[^;=\n]*=["']?([^"';\n]+)/i);
+          const filename = match ? match[1].trim() : 'resume_ats.pdf';
+
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+          showSuccess(filename);
+        } else {
+          const data = await resp.json().catch(() => ({ detail: 'Unknown error.' }));
+          showError(data.detail || `Server error: ${resp.status}`);
+        }
+
+      } catch (err) {
+        stopProgress(false);
+        showError('Network error — is the server running?');
+        console.error(err);
+      } finally {
+        isProcessing = false;
+        submitBtn.innerHTML = 'Optimize My Resume →';
+        submitBtn.disabled = !selectedFile;
+      }
+    }
+
+    // ── Result helpers ─────────────────────────────────────────────────────
+    function showSuccess(filename) {
+      resultBox.className = 'result-box visible success';
+      rbIcon.textContent = '✅';
+      rbText.innerHTML = `<strong>Success!</strong> Your ATS resume is downloading as <em>${escHtml(filename)}</em>.`;
+      rbAction.innerHTML = '';
+      resultBox.classList.add('visible');
+    }
+
+    function showError(msg) {
+      resultBox.className = 'result-box visible error';
+      rbIcon.textContent = '⚠️';
+      rbText.innerHTML = `<strong>Error:</strong> ${escHtml(msg)}`;
+      rbAction.innerHTML = '<button class="dl-btn" onclick="hideResult()" style="background:var(--danger);color:#fff;">Dismiss</button>';
+      resultBox.classList.add('visible');
+    }
+
+    function hideResult() {
+      resultBox.classList.remove('visible');
+      resultBox.className = 'result-box';
+      progressWrap.classList.remove('visible');
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+  </script>
+</body>
+</html>
