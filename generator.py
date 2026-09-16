@@ -62,10 +62,15 @@ def generate_resume_pdf(
     watermark: bool = True,
     watermark_text: str = "DRAFT",
     watermark_opacity: float = 0.05,
+    max_pages: int = 2,
 ) -> str:
     """
     Generate an ATS-optimised PDF from a parsed resume dict.
-    Guarantees the resulting PDF fits onto EXACTLY 1 page by optimizing content density.
+
+    Fits the resume into `max_pages` (default 2) before pruning anything.
+    A hard 1-page cap silently DELETED real content - 3 experience bullets,
+    2 projects and 1 education entry on a typical 5-year resume - so the
+    page budget is now a parameter and pruning is the last resort.
 
     Args:
         parsed:            Output of parser.parse_resume()
@@ -73,16 +78,18 @@ def generate_resume_pdf(
         watermark:         If True, stamp a diagonal watermark on every page (default: True).
         watermark_text:    Text to render as watermark (default: "DRAFT").
         watermark_opacity: Watermark alpha 0.0–1.0 (default: 0.05).
+        max_pages:         Page budget before any content is pruned (default: 2).
 
     Returns:
         The output_path string (same as input, for convenience).
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+    max_pages = max(1, min(int(max_pages), 5))
     best_data = parsed
     best_compact = False
 
-    # Iteratively test optimization levels (0 -> 4) to ensure 1 page output
+    # Try optimization levels 0 -> 4; level 0 prunes nothing at all.
     for level in range(5):
         compact_options = [False, True]
         for is_compact in compact_options:
@@ -98,10 +105,13 @@ def generate_resume_pdf(
             test_story = _build_story(opt_data, compact=is_compact)
             test_doc.build(test_story)
 
-            if test_doc.page == 1:
+            if test_doc.page <= max_pages:
                 best_data = opt_data
                 best_compact = is_compact
-                logger.info("Single-page fit achieved at level %d (compact=%s)", level, is_compact)
+                logger.info(
+                    "Fit achieved: %d page(s), pruning level %d (compact=%s)",
+                    test_doc.page, level, is_compact,
+                )
                 break
         else:
             continue
@@ -122,6 +132,8 @@ def generate_resume_pdf(
     logger.info("Generating PDF → %s", output_path)
     doc.build(story)
     logger.info("PDF generated successfully (%d bytes, pages=%d)", os.path.getsize(output_path), doc.page)
+    if doc.page > max_pages:
+        logger.warning("Content still exceeds %d page(s) after maximum pruning.", max_pages)
     return output_path
 
 
