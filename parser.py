@@ -58,6 +58,58 @@ def _split_inline_bullets(text: str) -> list[str]:
     return res
 
 
+# A line that is ONLY bullet glyphs. Happens when the bullet is laid out as its
+# own text block in the PDF, so PyMuPDF returns e.g. '\u25cf ' on a line by itself.
+RE_BULLET_ONLY = re.compile(r"^[\s\-\u2022\u00b7\*\u25aa\u25b8\u25ba\u2713\u2714\u25cf\u26aa\u25e6\u25a0\u25ab\u2043\u2013\u2014o]+$")
+
+# Sentence-final punctuation - decides whether the next line continues the
+# current bullet or starts something new.
+RE_TERMINAL = re.compile(r"[.!?;:]\s*$")
+
+
+def _is_bullet_only(text: str) -> bool:
+    """True for lines containing nothing but bullet glyphs."""
+    return bool(RE_BULLET_ONLY.match(text))
+
+
+# A wrapped line is usually long, or ends on a comma / conjunction / preposition.
+RE_DANGLING_END = re.compile(
+    r"(?:[,;:\-\u2013\u2014/]|"
+    r"\b(?:and|or|the|a|an|of|to|in|for|with|on|at|by|from|through|across|into|as|"
+    r"that|which|using|via|per|than|but|while|after|before|during|within|without|"
+    r"including|such|etc)\s*)$",
+    re.I,
+)
+CONTINUATION_MIN_LEN = 80
+
+
+def _is_continuation(prev: str) -> bool:
+    """
+    True when `prev` looks like a sentence cut off mid-line by the PDF/DOCX
+    text extractor, rather than a finished bullet.
+
+    Requires BOTH that the text is unterminated AND that it either runs long
+    (a real wrap) or ends on a dangling comma/conjunction. This stops a short,
+    complete bullet in a glyph-less list from absorbing the next bullet.
+    """
+    if not prev or RE_TERMINAL.search(prev):
+        return False
+    if len(prev) >= CONTINUATION_MIN_LEN:
+        return True
+    return bool(RE_DANGLING_END.search(prev))
+
+
+def _looks_like_entry_header(text: str) -> bool:
+    """
+    True if a bare (non-bulleted) line looks like a 'Role \u2014 Company' header
+    rather than a sentence. Stops the NEXT job's header being swallowed into
+    the current job's bullet list.
+    """
+    if RE_TERMINAL.search(text) or len(text) > 80:
+        return False
+    return bool(re.search(r"\s(?:\u2014|\u2013|\||at)\s", text))
+
+
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
@@ -311,6 +363,19 @@ def _parse_skills(lines: list[str]) -> list[str]:
             continue
 
         clean = _clean_bullet(stripped)
+        if not clean:
+            continue
+
+        # A short orphan line with no separators is the tail of a wrapped
+        # category, e.g. "... Nginx, Reverse" / "Proxy".
+        if (skills
+                and ":" not in clean
+                and not any(c in clean for c in (",", "|", "/", "\u2022", "\u00b7"))
+                and len(clean.split()) <= 3
+                and not RE_TERMINAL.search(skills[-1])):
+            skills[-1] = f"{skills[-1]} {clean}".strip()
+            continue
+
         if ":" in clean and not clean.lower().startswith("http"):
             skills.append(clean)
             continue
@@ -335,22 +400,55 @@ def _parse_skills(lines: list[str]) -> list[str]:
 
 
 def _parse_experience(lines: list[str]) -> list[dict]:
+    """
+    Parse the experience section.
+
+    Handles the layouts real resumes actually use:
+      * 'Role \u2014 Company' on one line with the dates on the NEXT line
+      * bullet glyphs sitting on a line of their own ('\u25cf ' alone)
+      * one bullet wrapped across several extracted lines
+    """
     entries: list[dict] = []
     current: dict | None = None
+    pending_header: str = ""     # header line seen before its date line
+    open_bullet = False          # a bare bullet glyph was just seen
+
+    def _flush():
+        nonlocal current
+        if current:
+            entries.append(current)
+            current = None
 
     for line in lines:
         stripped = _clean_line(line)
         if _is_blank(line):
             continue
 
-        date_m = RE_DATE_RANGE.search(stripped)
-        is_bullet = bool(RE_BULLET_PREFIX.match(stripped)) or ("●" in stripped or "•" in stripped)
+        # A line that is nothing but a bullet glyph introduces the bullet that
+        # follows. Skipping it here stops it being parsed as a role/company.
+        if _is_bullet_only(stripped):
+            open_bullet = True
+            continue
 
+        date_m = RE_DATE_RANGE.search(stripped)
+        is_bullet = (
+            open_bullet
+            or bool(RE_BULLET_PREFIX.match(stripped))
+            or ("\u25cf" in stripped) or ("\u2022" in stripped)
+        )
+        open_bullet = False
+
+        # ── New entry: a line carrying a date range ────────────────────────
         if date_m and not is_bullet:
-            if current:
-                entries.append(current)
+            _flush()
             dates = date_m.group().strip()
-            remainder = stripped[:date_m.start()].strip().rstrip("–—-|,").strip()
+            remainder = stripped[:date_m.start()].strip().rstrip("\u2013\u2014-|,").strip()
+
+            # Role/Company frequently sits on the PREVIOUS line
+            if not remainder and pending_header:
+                remainder = pending_header
+            pending_header = ""
+
             role, company, location = _split_role_company(remainder)
             current = {
                 "company": company,
@@ -359,34 +457,36 @@ def _parse_experience(lines: list[str]) -> list[dict]:
                 "location": location,
                 "bullets": [],
             }
-        elif current is not None:
-            bullets = _split_inline_bullets(stripped)
-            if bullets:
-                current["bullets"].extend(bullets)
-            else:
-                loc_m = RE_LOCATION_SUFFIX.search(stripped)
-                line_loc = ""
-                line_text = stripped
-                if loc_m:
-                    line_loc = loc_m.group(0).strip()
-                    line_text = stripped[:loc_m.start()].strip().rstrip(",|–-")
+            continue
 
-                if not current["role"]:
-                    current["role"] = line_text
-                    if line_loc and not current["location"]:
-                        current["location"] = line_loc
-                elif not current["company"]:
-                    current["company"] = line_text
-                    if line_loc and not current["location"]:
-                        current["location"] = line_loc
-                elif stripped:
-                    clean_p = _clean_bullet(stripped)
-                    if clean_p:
-                        current["bullets"].append(clean_p)
+        clean = _clean_bullet(stripped)
+        if not clean:
+            continue
 
-    if current:
-        entries.append(current)
+        # ── Before the first entry: remember as a possible header ──────────
+        if current is None:
+            pending_header = clean
+            continue
 
+        # ── Inside an entry ────────────────────────────────────────────────
+        if is_bullet:
+            current["bullets"].extend(_split_inline_bullets(stripped) or [clean])
+            continue
+
+        # Not bulleted: if the previous bullet is still an open sentence,
+        # this line is its continuation.
+        if current["bullets"] and _is_continuation(current["bullets"][-1]):
+            current["bullets"][-1] = f"{current['bullets'][-1]} {clean}".strip()
+            continue
+
+        # Previous bullet closed -> either the next job's header or a
+        # plain (unglyphed) bullet.
+        if _looks_like_entry_header(clean):
+            pending_header = clean
+        else:
+            current["bullets"].append(clean)
+
+    _flush()
     return entries
 
 
@@ -405,11 +505,47 @@ def _split_role_company(text: str) -> tuple[str, str, str]:
     return "", text, location
 
 
+def _balance_parens(text: str) -> str:
+    """Trim only *unmatched* outer parentheses - never a matching pair."""
+    t = text.strip()
+    changed = True
+    while changed:
+        changed = False
+        if t.endswith(")") and t.count("(") < t.count(")"):
+            t = t[:-1].strip(); changed = True
+        elif t.endswith("(") and t.count("(") > t.count(")"):
+            t = t[:-1].strip(); changed = True
+        elif t.startswith("(") and t.count("(") > t.count(")"):
+            t = t[1:].strip(); changed = True
+        elif t.startswith(")") and t.count(")") > t.count("("):
+            t = t[1:].strip(); changed = True
+    return t.rstrip(" ,;|\u2013\u2014-").strip()
+
+
+def _split_compound_education(line: str) -> list[str]:
+    """
+    '12th \u2014 School A (2017) | 10th \u2014 School B (2015)' holds two entries on
+    one line. Split it only when every pipe-separated part carries its own year.
+    """
+    if "|" not in line:
+        return [line]
+    parts = [part.strip() for part in line.split("|") if part.strip()]
+    if len(parts) < 2:
+        return [line]
+    if all(RE_YEAR.search(part) for part in parts):
+        return parts
+    return [line]
+
+
 def _parse_education(lines: list[str]) -> list[dict]:
     entries: list[dict] = []
     current: dict | None = None
 
-    for line in lines:
+    expanded: list[str] = []
+    for raw_line in lines:
+        expanded.extend(_split_compound_education(_clean_line(raw_line)))
+
+    for line in expanded:
         stripped = _clean_line(line)
         if _is_blank(line):
             continue
@@ -423,8 +559,7 @@ def _parse_education(lines: list[str]) -> list[dict]:
                 entries.append(current)
             dates_text = date_m.group().strip()
             remainder = stripped[:date_m.start()].strip().rstrip("–—-|,").strip()
-            remainder = re.sub(r"[\(\)]\s*$", "", remainder).strip()
-            remainder = re.sub(r"^\s*[\(\)]", "", remainder).strip()
+            remainder = _balance_parens(remainder)
 
             degree, institution, location = _split_degree_institution(remainder)
             current = {
@@ -516,16 +651,17 @@ def _parse_projects(lines: list[str]) -> list[dict]:
             name_part = _clean_bullet(name_part)
             current = {"name": name_part, "tech": "", "dates": dates, "bullets": []}
         elif current is not None:
+            clean_p = _clean_bullet(stripped)
+            if not clean_p:
+                continue
             if re.search(r"\btech(?:nolog(?:y|ies))?s?:|stack:|built with:|using:", stripped, re.I):
-                current["tech"] = _clean_bullet(stripped)
+                current["tech"] = clean_p
+            elif (not is_bullet and current["bullets"]
+                  and _is_continuation(current["bullets"][-1])):
+                # continuation of a bullet wrapped across extracted lines
+                current["bullets"][-1] = f"{current['bullets'][-1]} {clean_p}".strip()
             else:
-                bullets = _split_inline_bullets(stripped)
-                if bullets:
-                    current["bullets"].extend(bullets)
-                else:
-                    clean_p = _clean_bullet(stripped)
-                    if clean_p:
-                        current["bullets"].append(clean_p)
+                current["bullets"].extend(_split_inline_bullets(stripped) or [clean_p])
 
     if current:
         entries.append(current)
