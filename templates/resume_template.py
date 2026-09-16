@@ -8,6 +8,16 @@ Implements the Classic Resume Worded (Wall Street Oasis / Harvard ATS) format:
   • Uppercase bold section headers with solid horizontal divider lines
   • Clean bullet points with support for sub-bullets
   • ATS-optimised single-column flowable structure
+
+Fixes applied:
+  1. Date column is now fluid (min(2.0in, 32% of width)) and month names are
+     abbreviated, so ranges like "September 2022 – December 2024" stay on ONE
+     line and remain parseable by ATS date regexes.
+  2. _esc_bold_prefix() only bolds whitelisted labels — no more "<b>Shift 9:</b>".
+  3. Sub-bullet detection is now a single real regex instead of dead code.
+  4. skills_block() decides category-vs-plain PER ITEM instead of globally.
+  5. KeepTogether() wraps only the entry header, never the whole bullet list,
+     so long entries can no longer overflow the frame.
 """
 
 from __future__ import annotations
@@ -16,7 +26,7 @@ import re
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     Paragraph,
     Spacer,
@@ -41,7 +51,6 @@ USABLE_WIDTH = PAGE_SIZE[0] - MARGIN_LEFT - MARGIN_RIGHT
 # Colors
 # ---------------------------------------------------------------------------
 C_BLACK = colors.HexColor("#000000")
-C_DARK  = colors.HexColor("#111111")
 C_MUTED = colors.HexColor("#333333")
 C_RULE  = colors.HexColor("#000000")
 
@@ -51,7 +60,6 @@ C_RULE  = colors.HexColor("#000000")
 FONT_REGULAR = "Times-Roman"
 FONT_BOLD    = "Times-Bold"
 FONT_ITALIC  = "Times-Italic"
-FONT_BOLDITA = "Times-BoldItalic"
 
 # ---------------------------------------------------------------------------
 # Paragraph styles
@@ -177,14 +185,52 @@ STYLE_SUB_BULLET = _make_style(
     spaceAfter=2,
 )
 
-BULLET_PREFIX = "<font size=6>&bull;</font>&nbsp;&nbsp;"
-SUB_BULLET_PREFIX = "<font size=5.5>o</font>&nbsp;&nbsp;"
+BULLET_PREFIX = "<font size=6>&bull;</font>  "
+SUB_BULLET_PREFIX = "<font size=5.5>o</font>  "
 
+# Consistent glyph size for the compact skills grid (leader and separators match)
+SKILL_LEADER = "<font size=5.5>&bull;</font>  "
+SKILL_SEP    = "   <font size=5.5>&bull;</font>   "
+
+
+# ---------------------------------------------------------------------------
+# Date normalisation (FIX #1)
+# ---------------------------------------------------------------------------
+_MONTH_ABBR = {
+    "January": "Jan", "February": "Feb", "March": "Mar", "April": "Apr",
+    "May": "May", "June": "Jun", "July": "Jul", "August": "Aug",
+    "September": "Sep", "October": "Oct", "November": "Nov", "December": "Dec",
+}
+
+
+def _short_dates(text: str) -> str:
+    """
+    Abbreviate full month names so a date range fits the right-hand column
+    on a single line. ATS parsers read ranges far more reliably unbroken.
+
+        "September 2022 – December 2024"  ->  "Sep 2022 – Dec 2024"
+    """
+    if not text:
+        return text
+    for full, abbr in _MONTH_ABBR.items():
+        # word-boundary replace so "Septembrine" style accidents can't happen
+        text = re.sub(rf"\b{full}\b", abbr, text)
+    return text
 
 
 # ---------------------------------------------------------------------------
 # Layout Helpers
 # ---------------------------------------------------------------------------
+
+def _date_col_width(usable_width: float = USABLE_WIDTH) -> float:
+    """
+    Fluid right-column width (FIX #1).
+
+    Wide enough for "Sep 2022 – Dec 2024" at 10.5pt Times-Bold (~110pt),
+    but never so wide that it starves the left column on narrow layouts.
+    """
+    return min(2.0 * inch, usable_width * 0.32)
+
 
 def make_two_col_row(
     left_html: str,
@@ -199,7 +245,7 @@ def make_two_col_row(
     """
     p_left = Paragraph(left_html, left_style)
     p_right = Paragraph(right_html, right_style)
-    w_right = 1.4 * inch
+    w_right = _date_col_width(usable_width)
     w_left = usable_width - w_right
     tbl = Table([[p_left, p_right]], colWidths=[w_left, w_right])
     tbl.setStyle(TableStyle([
@@ -234,7 +280,7 @@ def section_heading(title: str) -> list:
 
 
 def contact_line(contact: dict) -> Paragraph:
-    """Build a single left-aligned contact string separated by pipes."""
+    """Build a single centred contact string separated by pipes."""
     parts = []
     if contact.get("email"):
         parts.append(contact["email"])
@@ -253,8 +299,37 @@ def contact_line(contact: dict) -> Paragraph:
     if contact.get("website"):
         parts.append(contact["website"])
 
-    text = " &nbsp;|&nbsp; ".join(parts) if parts else ""
+    text = "  |  ".join(parts) if parts else ""
     return Paragraph(text, STYLE_CONTACT)
+
+
+# ---------------------------------------------------------------------------
+# Bullet helpers (FIX #3)
+# ---------------------------------------------------------------------------
+
+# Sub-bullet markers only. '-' and '*' are deliberately excluded: parser.py
+# already strips them via RE_BULLET_PREFIX, so a surviving '-' is main-level.
+RE_SUB_BULLET = re.compile(r"^(?:o|v|->|>)\s+")
+
+# Main-level bullet noise to strip before rendering.
+RE_BULLET_NOISE = re.compile(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]+")
+
+
+def _is_sub_bullet(text: str) -> bool:
+    """True only for genuine nested markers ('o ', 'v ', '> ', '-> ')."""
+    return bool(RE_SUB_BULLET.match(text))
+
+
+def _strip_bullet(text: str) -> str:
+    return RE_BULLET_NOISE.sub("", text.strip()).strip()
+
+
+def _bullet_flowable(text: str) -> Paragraph:
+    """Render one bullet string at the correct level."""
+    if _is_sub_bullet(text):
+        clean = re.sub(r"^(?:o|v|->|>)\s*", "", text.strip())
+        return Paragraph(f"{SUB_BULLET_PREFIX}{_esc_bold_prefix(clean)}", STYLE_SUB_BULLET)
+    return Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(_strip_bullet(text))}", STYLE_BULLET)
 
 
 # ---------------------------------------------------------------------------
@@ -271,47 +346,39 @@ def experience_block(entry: dict) -> list:
     loc     = entry.get("location", "").strip()
     bullets = entry.get("bullets", [])
 
-    inner = []
+    header = []
+    body = []
 
     # Header Row: Company (Bold, left) | Dates (Bold, right)
     if company or dates:
-        inner.append(make_two_col_row(
+        header.append(make_two_col_row(
             f"<b>{_esc(company)}</b>" if company else "",
-            f"<b>{_esc(dates)}</b>" if dates else "",
+            f"<b>{_esc(_short_dates(dates))}</b>" if dates else "",
             STYLE_ORG,
             STYLE_META_BOLD,
         ))
 
     # Sub-header Row: Role (Italic, left) | Location (Regular, right)
     if role or loc:
-        inner.append(make_two_col_row(
+        header.append(make_two_col_row(
             f"<i>{_esc(role)}</i>" if role else "",
             _esc(loc) if loc else "",
             STYLE_ROLE,
             STYLE_META,
         ))
 
-    if inner:
-        inner.append(Spacer(1, 2))
-
     # Bullets & sub-bullets
     for bullet in bullets:
         b_str = bullet.strip()
-        if not b_str:
-            continue
+        if b_str:
+            body.append(_bullet_flowable(b_str))
 
-        # Check for sub-bullet markers (e.g. starts with 'o ', '->', '  -')
-        is_sub = bool(re.match(r"^(?:o|v|\-|\>|\*)\s+", b_str)) and len(b_str) > 2 and b_str.startswith("o ")
-        if is_sub or b_str.startswith("o "):
-            clean_b = re.sub(r"^(?:o|\-|\*|●|•)\s*", "", b_str)
-            inner.append(Paragraph(f"{SUB_BULLET_PREFIX}{_esc_bold_prefix(clean_b)}", STYLE_SUB_BULLET))
-        else:
-            clean_b = re.sub(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]*", "", b_str)
-            inner.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_b)}", STYLE_BULLET))
-
-    if inner:
-        items.append(KeepTogether(inner[:3]))
-        items.extend(inner[3:])
+    # FIX #5: keep ONLY the header together — never the bullet list.
+    if header:
+        items.append(KeepTogether(header))
+        if body:
+            items.append(Spacer(1, 2))
+    items.extend(body)
 
     return items
 
@@ -327,13 +394,14 @@ def education_block(entry: dict) -> list:
     location    = entry.get("location", "").strip()
     bullets     = entry.get("bullets", [])
 
-    inner = []
+    header = []
+    body = []
 
     # Header Row: Institution (Bold, left) | Date (Bold, right)
     if institution or dates:
-        inner.append(make_two_col_row(
+        header.append(make_two_col_row(
             f"<b>{_esc(institution)}</b>" if institution else "",
-            f"<b>{_esc(dates)}</b>" if dates else "",
+            f"<b>{_esc(_short_dates(dates))}</b>" if dates else "",
             STYLE_ORG,
             STYLE_META_BOLD,
         ))
@@ -347,53 +415,79 @@ def education_block(entry: dict) -> list:
     right_meta = ", ".join(right_meta_parts)
 
     if degree or right_meta:
-        inner.append(make_two_col_row(
+        header.append(make_two_col_row(
             f"<i>{_esc(degree)}</i>" if degree else "",
             _esc(right_meta) if right_meta else "",
             STYLE_ROLE,
             STYLE_META,
         ))
 
-    if inner:
-        inner.append(Spacer(1, 2))
-
     for bullet in bullets:
         b_str = bullet.strip()
-        if not b_str:
-            continue
-        clean_b = re.sub(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]*", "", b_str)
-        inner.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_b)}", STYLE_BULLET))
+        if b_str:
+            body.append(Paragraph(
+                f"{BULLET_PREFIX}{_esc_bold_prefix(_strip_bullet(b_str))}", STYLE_BULLET))
 
-    if inner:
-        items.append(KeepTogether(inner))
+    # FIX #5
+    if header:
+        items.append(KeepTogether(header))
+        if body:
+            items.append(Spacer(1, 2))
+    items.extend(body)
 
     return items
+
+
+# ---------------------------------------------------------------------------
+# Skills (FIX #4)
+# ---------------------------------------------------------------------------
+
+_SKILLS_PER_LINE = 6
+
+
+def _flush_plain_skills(plain: list[str], items: list) -> None:
+    """Emit accumulated plain skills as compact 6-per-line rows."""
+    for i in range(0, len(plain), _SKILLS_PER_LINE):
+        chunk = plain[i:i + _SKILLS_PER_LINE]
+        line_text = SKILL_SEP.join(_esc(s) for s in chunk)
+        items.append(Paragraph(f"{SKILL_LEADER}{line_text}", STYLE_BULLET))
 
 
 def skills_block(skills: list[str]) -> list:
-    """Render skills section formatted with category prefixes or clean bullet lines."""
+    """
+    Render the skills section.
+
+    FIX #4: the category-vs-plain decision is made PER ITEM. A single
+    "Languages: Nepali, English" entry no longer forces every other skill
+    onto its own bullet line.
+    """
     if not skills:
         return []
 
-    items = []
+    items: list = []
+    plain: list[str] = []
 
-    # Check if skills contain colon-separated categories (e.g. "Technical Skills: Python, SQL...")
-    has_categories = any(":" in s for s in skills)
+    for skill_item in skills:
+        clean_item = re.sub(r"^[\-•·\*▪▸►✓✔]\s*", "", skill_item.strip())
+        if not clean_item:
+            continue
 
-    if has_categories:
-        for skill_item in skills:
-            clean_item = re.sub(r"^[\-•·\*▪▸►✓✔]\s*", "", skill_item.strip())
-            items.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_item)}", STYLE_BULLET))
-    else:
-        # Group into lines of ~6 items
-        chunk_size = 6
-        chunks = [skills[i:i+chunk_size] for i in range(0, len(skills), chunk_size)]
-        for chunk in chunks:
-            line_text = " &nbsp;&nbsp;<font size=5.5>&bull;</font>&nbsp;&nbsp; ".join(_esc(s) for s in chunk)
-            items.append(Paragraph(f"{BULLET_PREFIX}{line_text}", STYLE_BULLET))
+        if _is_labelled_category(clean_item):
+            # flush any pending plain skills first so order is preserved
+            _flush_plain_skills(plain, items)
+            plain = []
+            items.append(Paragraph(
+                f"{BULLET_PREFIX}{_esc_bold_prefix(clean_item)}", STYLE_BULLET))
+        else:
+            plain.append(clean_item)
 
+    _flush_plain_skills(plain, items)
     return items
 
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
 
 def projects_block(entry: dict) -> list:
     """Build flowables for a single project entry."""
@@ -405,31 +499,41 @@ def projects_block(entry: dict) -> list:
     dates   = entry.get("dates", "").strip()
     bullets = entry.get("bullets", [])
 
-    inner = []
+    header = []
+    body = []
+
     if name or dates:
-        inner.append(make_two_col_row(
+        header.append(make_two_col_row(
             f"<b>{_esc(name)}</b>" if name else "",
-            f"<b>{_esc(dates)}</b>" if dates else "",
+            f"<b>{_esc(_short_dates(dates))}</b>" if dates else "",
             STYLE_ORG,
             STYLE_META_BOLD,
         ))
 
     if tech:
-        clean_t = re.sub(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]*", "", tech)
-        inner.append(Paragraph(f"{BULLET_PREFIX}<b>Tech Stack:</b> {_esc(clean_t)}", STYLE_BULLET))
+        clean_t = _strip_bullet(tech)
+        if clean_t:
+            body.append(Paragraph(
+                f"{BULLET_PREFIX}<b>Tech Stack:</b> {_esc(clean_t)}", STYLE_BULLET))
 
     if bullets:
         for b in bullets:
-            clean_b = re.sub(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]*", "", b.strip())
+            clean_b = _strip_bullet(b)
             if clean_b:
-                inner.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_b)}", STYLE_BULLET))
+                body.append(Paragraph(
+                    f"{BULLET_PREFIX}{_esc_bold_prefix(clean_b)}", STYLE_BULLET))
     elif desc:
-        clean_d = re.sub(r"^[\-•·\*▪▸►✓✔●⚪◦■▫⁃–—\s]*", "", desc)
+        clean_d = _strip_bullet(desc)
         if clean_d:
-            inner.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_d)}", STYLE_BULLET))
+            body.append(Paragraph(
+                f"{BULLET_PREFIX}{_esc_bold_prefix(clean_d)}", STYLE_BULLET))
 
-    if inner:
-        items.append(KeepTogether(inner))
+    # FIX #5
+    if header:
+        items.append(KeepTogether(header))
+        if body:
+            items.append(Spacer(1, 2))
+    items.extend(body)
 
     return items
 
@@ -440,7 +544,8 @@ def list_section_block(items_list: list[str]) -> list:
     for item in items_list:
         clean_item = re.sub(r"^[\-•·\*▪▸►✓✔]\s*", "", item.strip())
         if clean_item:
-            flowables.append(Paragraph(f"{BULLET_PREFIX}{_esc_bold_prefix(clean_item)}", STYLE_BULLET))
+            flowables.append(Paragraph(
+                f"{BULLET_PREFIX}{_esc_bold_prefix(clean_item)}", STYLE_BULLET))
     return flowables
 
 
@@ -459,17 +564,53 @@ def _esc(text: str) -> str:
     )
 
 
+# FIX #2 (revised): recognise a "Label: values" line structurally instead of
+# by a fixed word list, so real categories like "Frontend:", "DevOps & Cloud:",
+# "Languages & Other:" and "Marketing Technology:" are bolded, while prose such
+# as "Shift 9:00 AM - 5:00 PM" or "Note: promoted twice" is left alone.
+LABEL_STOPWORDS = {
+    "note", "nb", "eg", "e.g", "ie", "i.e", "etc", "warning", "important",
+    "ps", "p.s", "total", "approx", "approximately", "re", "ref", "step",
+    "day", "time", "shift", "hours", "duration", "age", "size",
+}
+
+
+def _is_labelled_category(text: str) -> bool:
+    """
+    True when the text is a category line of the form "Label: v1, v2, v3".
+
+    A prefix qualifies only if it:
+      * is 1-4 words
+      * contains no digits          -> rejects "Shift 9:", "Q3 2024:"
+      * is not a prose stopword     -> rejects "Note:"
+      * is followed by something that reads like a list of values
+    """
+    if ":" not in text or text.lower().startswith(("http", "www")):
+        return False
+
+    prefix, rest = (part.strip() for part in text.split(":", 1))
+    words = prefix.split()
+
+    if not 1 <= len(words) <= 4:
+        return False
+    if any(ch.isdigit() for ch in prefix):
+        return False
+    if prefix.lower().rstrip(".,") in LABEL_STOPWORDS:
+        return False
+    if not rest:
+        return False
+
+    # remainder must look like a value list: separators, or at least two words
+    return bool(re.search(r"[,;/|&]", rest)) or len(rest.split()) >= 2
+
+
 def _esc_bold_prefix(text: str) -> str:
     """
-    If line has a label before colon (e.g. "Technical Skills: R, Python" or "Awards: Fellow"),
-    make the prefix bold: "<b>Technical Skills:</b> R, Python".
+    Bold the leading label of a "Label: values" line, but only for genuine
+    resume categories (see _is_labelled_category).
     """
-    if ":" in text and not text.lower().startswith("http"):
-        parts = text.split(":", 1)
-        prefix = parts[0].strip()
-        rest = parts[1].strip()
-        # Only make bold if prefix is short label (1-5 words)
-        if 1 <= len(prefix.split()) <= 5:
-            return f"<b>{_esc(prefix)}:</b> {_esc(rest)}"
+    if _is_labelled_category(text):
+        prefix, rest = (part.strip() for part in text.split(":", 1))
+        return f"<b>{_esc(prefix)}:</b> {_esc(rest)}"
 
     return _esc(text)
