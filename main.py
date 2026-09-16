@@ -5,7 +5,7 @@ FastAPI service entry point.
 
 Routes:
   GET  /          → serve the frontend HTML
-  POST /process   → accept PDF, return reformatted ATS PDF
+  POST /process   → accept PDF or DOCX, return reformatted ATS PDF
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from extractor import extract_text_from_pdf, extract_metadata
+from extractor import (
+    extract_text_from_pdf, extract_metadata,
+    extract_text_from_docx, extract_metadata_from_docx,
+)
 from parser import parse_resume
 from generator import generate_resume_pdf
 
@@ -49,7 +52,7 @@ for d in (UPLOAD_DIR, OUTPUT_DIR):
 # ---------------------------------------------------------------------------
 app = FastAPI(
     title="Resume Service",
-    description="Upload a PDF resume → get an ATS-optimised PDF back. 100% local.",
+    description="Upload a PDF or DOCX resume → get an ATS-optimised PDF back. 100% local.",
     version="1.0.0",
 )
 
@@ -74,7 +77,7 @@ async def serve_frontend():
 
 @app.post(
     "/process",
-    summary="Upload a PDF resume and receive an ATS-optimised PDF",
+    summary="Upload a PDF or DOCX resume and receive an ATS-optimised PDF",
     response_class=FileResponse,
 )
 async def process_resume(
@@ -82,21 +85,22 @@ async def process_resume(
     watermark: bool = Form(True),
     watermark_text: str = Form("DRAFT"),
     watermark_opacity: float = Form(0.05),
+    max_pages: int = Form(2),
 ):
     # ── Validate ─────────────────────────────────────────────────────────────
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
 
     suffix = Path(file.filename).suffix.lower()
-    if suffix != ".pdf":
+    if suffix not in (".pdf", ".docx"):
         raise HTTPException(
             status_code=415,
-            detail="Only PDF files are accepted. Please upload a .pdf file.",
+            detail="Only PDF and Word (.docx) files are accepted.",
         )
 
     # ── Save upload to temp ──────────────────────────────────────────────────
     job_id     = uuid.uuid4().hex
-    upload_path = UPLOAD_DIR / f"{job_id}_input.pdf"
+    upload_path = UPLOAD_DIR / f"{job_id}_input{suffix}"
     output_path = OUTPUT_DIR / f"{job_id}_resume_ats.pdf"
 
     try:
@@ -112,8 +116,12 @@ async def process_resume(
         # ── Extract ───────────────────────────────────────────────────────────
         logger.info("[%s] Extracting text …", job_id)
         try:
-            raw_text = extract_text_from_pdf(str(upload_path))
-            pdf_meta = extract_metadata(str(upload_path))
+            if suffix == ".docx":
+                raw_text = extract_text_from_docx(str(upload_path))
+                pdf_meta = extract_metadata_from_docx(str(upload_path))
+            else:
+                raw_text = extract_text_from_pdf(str(upload_path))
+                pdf_meta = extract_metadata(str(upload_path))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         except Exception as exc:
@@ -124,9 +132,9 @@ async def process_resume(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "No readable text found in the PDF. "
-                    "The file may be image-based (scanned). "
-                    "Please upload a text-based PDF."
+                    "No readable text found in the file. "
+                    "PDFs may be image-based (scanned). "
+                    "Please upload a text-based PDF or a .docx file."
                 ),
             )
 
@@ -154,6 +162,7 @@ async def process_resume(
                 watermark=watermark,
                 watermark_text=watermark_text,
                 watermark_opacity=watermark_opacity,
+                max_pages=max(1, min(max_pages, 5)),
             )
         except Exception as exc:
             logger.exception("[%s] PDF generation failed", job_id)
