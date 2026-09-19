@@ -86,53 +86,43 @@ def generate_resume_pdf(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     max_pages = max(1, min(int(max_pages), 5))
-    best_data = parsed
-    best_compact = False
 
-    # Try optimization levels 0 -> 4; level 0 prunes nothing at all.
+    def _render(data: dict, compact: bool) -> tuple[bytes, int]:
+        """Render a story in memory; return (pdf_bytes, page_count)."""
+        buf = io.BytesIO()
+        doc = _build_doc(
+            buf,
+            watermark=watermark,
+            watermark_text=watermark_text,
+            watermark_opacity=watermark_opacity,
+            compact=compact,
+        )
+        doc.build(_build_story(data, compact=compact))
+        return buf.getvalue(), doc.page
+
+    pdf_bytes: bytes | None = None
+    pages = 0
     for level in range(5):
-        compact_options = [False, True]
-        for is_compact in compact_options:
-            opt_data = _optimize_parsed_data(parsed, level)
-            buf = io.BytesIO()
-            test_doc = _build_doc(
-                buf,
-                watermark=watermark,
-                watermark_text=watermark_text,
-                watermark_opacity=watermark_opacity,
-                compact=is_compact,
-            )
-            test_story = _build_story(opt_data, compact=is_compact)
-            test_doc.build(test_story)
-
-            if test_doc.page <= max_pages:
-                best_data = opt_data
-                best_compact = is_compact
+        opt_data = _optimize_parsed_data(parsed, level)
+        for is_compact in (False, True):
+            candidate, n_pages = _render(opt_data, is_compact)
+            if n_pages <= max_pages:
+                pdf_bytes, pages = candidate, n_pages
                 logger.info(
                     "Fit achieved: %d page(s), pruning level %d (compact=%s)",
-                    test_doc.page, level, is_compact,
+                    n_pages, level, is_compact,
                 )
                 break
-        else:
-            continue
-        break
-    else:
-        best_data = _optimize_parsed_data(parsed, 4)
-        best_compact = True
+        if pdf_bytes is not None:
+            break
 
-    doc = _build_doc(
-        output_path,
-        watermark=watermark,
-        watermark_text=watermark_text,
-        watermark_opacity=watermark_opacity,
-        compact=best_compact,
-    )
-    story = _build_story(best_data, compact=best_compact)
+    if pdf_bytes is None:
+        pdf_bytes, pages = _render(_optimize_parsed_data(parsed, 4), True)
 
     logger.info("Generating PDF → %s", output_path)
-    doc.build(story)
-    logger.info("PDF generated successfully (%d bytes, pages=%d)", os.path.getsize(output_path), doc.page)
-    if doc.page > max_pages:
+    Path(output_path).write_bytes(pdf_bytes)
+    logger.info("PDF generated successfully (%d bytes, pages=%d)", os.path.getsize(output_path), pages)
+    if pages > max_pages:
         logger.warning("Content still exceeds %d page(s) after maximum pruning.", max_pages)
     return output_path
 
