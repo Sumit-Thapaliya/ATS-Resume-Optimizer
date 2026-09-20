@@ -273,6 +273,37 @@ def _extract_location(text: str) -> str:
 # Name extraction
 # ---------------------------------------------------------------------------
 
+# ========== BLOCK 1: paste directly ABOVE 'def _extract_name(' ==========
+
+# Job-title words. A line made only of these is a headline, not a person's name.
+RE_TITLE_WORDS = re.compile(
+    r"\b(developer|engineer|manager|analyst|designer|architect|consultant|"
+    r"administrator|specialist|scientist|technician|officer|director|lead|head|"
+    r"intern|trainee|associate|coordinator|executive|researcher|joiner)\b", re.I
+)
+
+
+def _looks_like_person_name(line: str) -> bool:
+    """
+    Guard the name extractor.
+
+    Without this, a resume whose first line is an availability note
+    ('Immediate Joiner') or a headline ('Senior Full Stack Developer')
+    gets adopted as the candidate's name - which then becomes the PDF's
+    main heading AND the download filename.
+    """
+    if not line:
+        return False
+    if RE_AVAILABILITY.fullmatch(line.strip()):
+        return False
+    if RE_TITLE_WORDS.search(line):
+        return False
+    # "Birgunj, Nepal" is a location, not a person.
+    if RE_LOCATION_SUFFIX.search(line.strip()):
+        return False
+    return True
+
+
 def _extract_name(non_blank_lines: list[str], full_text: str, contact: dict) -> str:
     nlp = _get_nlp()
     if nlp is not None:
@@ -281,7 +312,8 @@ def _extract_name(non_blank_lines: list[str], full_text: str, contact: dict) -> 
         for ent in doc.ents:
             if ent.label_ == "PERSON":
                 candidate = ent.text.strip()
-                if "@" not in candidate and len(candidate.split()) >= 2:
+                if ("@" not in candidate and len(candidate.split()) >= 2
+                        and _looks_like_person_name(candidate)):
                     return candidate
 
     skip_vals = {contact["email"], contact["phone"], contact["linkedin"]}
@@ -293,17 +325,80 @@ def _extract_name(non_blank_lines: list[str], full_text: str, contact: dict) -> 
             continue
         if RE_EMAIL.search(stripped) or RE_PHONE.search(stripped) or RE_URL.search(stripped):
             continue
+        # Stop at the first section heading - the name lives in the header
+        # area only. Scanning further adopts a company name instead.
+        if _detect_section(stripped) is not None:
+            break
         words = stripped.split()
-        if 1 < len(words) <= 5 and _detect_section(stripped) is None:
-            if all(w[0].isupper() for w in words if w.isalpha()):
+        if 1 < len(words) <= 5:
+            if (all(w[0].isupper() for w in words if w.isalpha())
+                    and _looks_like_person_name(stripped)):
                 return stripped
 
-    return non_blank_lines[0].strip() if non_blank_lines else "Unknown Candidate"
+    # Last resort. Only the header area is eligible, and the same
+    # contact / section / availability / title / location filters apply.
+    for line in non_blank_lines[:4]:
+        cand = line.strip()
+        if not cand:
+            continue
+        if any(sv and sv in cand for sv in skip_vals if sv):
+            continue
+        if RE_EMAIL.search(cand) or RE_PHONE.search(cand) or RE_URL.search(cand):
+            continue
+        if _detect_section(cand) is not None:
+            break
+        if _looks_like_person_name(cand):
+            return cand
+    return "Unknown Candidate"
+
+
 
 
 # ---------------------------------------------------------------------------
 # Title extraction
 # ---------------------------------------------------------------------------
+# ========== BLOCK 2: paste directly ABOVE 'def _extract_title(' ==========
+
+# Availability / notice-period phrases that people paste into their headline.
+# They are not job titles and should not appear in the ATS header line.
+RE_AVAILABILITY = re.compile(
+    r"""\b(?:
+        immediate(?:ly)?\s+(?:joiner|joining|join(?:ing)?\s)? |
+        available\s+(?:immediately|from\b|to\s+join\b)|
+        notice\s+period\b[^|]*|
+        open\s+to\s+work\b |
+        seeking\s+(?:new\s+)?opportunit\w+\b |
+        willing\s+to\s+relocate\b |
+        ready\s+to\s+join\b |
+        can\s+join\s+immediately\b
+    )""",
+    re.I | re.X,
+)
+
+
+def _clean_title(raw: str) -> str:
+    """
+    Strip availability notes from a headline.
+
+    'Senior Full Stack Developer | Cloud & DevOps Engineer | Immediate Joiner'
+      -> 'Senior Full Stack Developer | Cloud & DevOps Engineer'
+
+    Segments are split on the separators resumes actually use, so a phrase is
+    only removed when it stands alone - it never eats a real job title.
+    """
+    if not raw:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s*[|·•/]\s*", raw) if p.strip()]
+    kept = [p for p in parts if not RE_AVAILABILITY.fullmatch(p)]
+
+    # Nothing survived (headline was ONLY an availability note) - fall back to
+    # removing the phrase inline rather than returning an empty title.
+    if not kept:
+        cleaned = RE_AVAILABILITY.sub("", raw)
+        return re.sub(r"\s*[|·•/]\s*$", "", cleaned).strip(" |·•/")
+
+    return " | ".join(kept)
+
 
 def _extract_title(non_blank_lines: list[str], name: str, contact: dict) -> str:
     skip_vals = {contact.get("email"), contact.get("phone")}
@@ -322,8 +417,13 @@ def _extract_title(non_blank_lines: list[str], name: str, contact: dict) -> str:
             if _detect_section(stripped) is not None:
                 break
             if any(kw in stripped.lower() for kw in ["developer", "engineer", "architect", "lead", "manager", "designer", "specialist", "consultant", "joiner", "|"]):
-                return stripped
+                cleaned = _clean_title(stripped)
+                if cleaned:
+                    return cleaned
+                # The line was only an availability note - keep looking.
+                continue
     return ""
+
 
 
 # ---------------------------------------------------------------------------
