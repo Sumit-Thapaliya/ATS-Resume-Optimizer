@@ -13,12 +13,17 @@ Routes:
   POST /v1/format   → same, but API-key protected + rate limited    (machine-to-machine)
   GET  /health      → liveness probe
   GET  /v1/health   → liveness probe (public, no key)
+
+Side artifact: every successful parse is also written to
+  output/<job_id>_resume.json   (disable with SAVE_RESUME_JSON=false)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections import defaultdict, deque
@@ -49,6 +54,7 @@ from extractor import (
 )
 from parser import parse_resume, _get_nlp
 from generator import generate_resume_pdf
+from resume_schema import prune_empty, to_resume_json
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -81,6 +87,9 @@ API_KEYS: set[str] = {
 ALLOWED_SUFFIXES = {".pdf", ".docx"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "20")) * 1024 * 1024
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+
+# Write the structured parse result to output/<job_id>_resume.json (default on).
+SAVE_RESUME_JSON = os.getenv("SAVE_RESUME_JSON", "true").strip().lower() in ("1", "true", "yes", "on")
 
 # ---------------------------------------------------------------------------
 # App
@@ -139,6 +148,31 @@ async def require_api_key(x_api_key: str | None = Header(default=None)) -> str:
     return x_api_key
 
 
+# Private / loopback ranges. An X-Forwarded-For entry matching this is a proxy,
+# not a real client, so it must not be used as the rate-limit bucket key.
+_PRIVATE_IP = re.compile(
+    r"^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|localhost$)", re.I
+)
+
+
+def _client_ip(request: Request) -> str:
+    """
+    Real client IP, proxy-aware.
+
+    Behind ngrok / Render / any reverse proxy, uvicorn sees every connection
+    as 127.0.0.1, so using request.client.host would put ALL callers into one
+    shared rate-limit bucket. The proxy puts the true client in
+    X-Forwarded-For; we take the RIGHTMOST non-private entry, because the
+    leftmost value is supplied by the client and can be spoofed.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        for part in reversed([p.strip() for p in xff.split(",") if p.strip()]):
+            if not _PRIVATE_IP.match(part):
+                return part
+    return request.client.host if request.client else "unknown"
+
+
 # Sliding-window counter, in memory. Fine for a single container; if you scale
 # to multiple workers, move this to Redis.
 _hits: dict[str, deque] = defaultdict(deque)
@@ -147,7 +181,7 @@ _last_prune = 0.0
 
 def enforce_rate_limit(request: Request) -> None:
     global _last_prune
-    ip = request.client.host if request.client else "unknown"
+    ip = _client_ip(request)
     now = time.monotonic()
 
     # Occasionally drop stale IPs so the dict can't grow forever
@@ -192,10 +226,11 @@ def _run_pipeline(
     watermark_text: str,
     watermark_opacity: float,
     max_pages: int,
-) -> tuple[Path, str]:
+) -> tuple[Path, Path, Path | None, str]:
     """
     Validate → save → extract → parse → generate.
-    Returns (output_path, download_filename). Raises HTTPException on any failure.
+    Returns (output_path, upload_path, json_path, download_filename).
+    Raises HTTPException on any failure.
     """
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
@@ -257,6 +292,28 @@ def _run_pipeline(
             job_id, parsed.get("name", "?"), [k for k, v in parsed.items() if v],
         )
 
+        # ── Structured JSON ───────────────────────────────────────────────────
+        # Side artifact: only what was actually found on THIS resume is written.
+        # Never fails the request - the PDF is the product, the JSON is a bonus.
+        json_path: Path | None = None
+        if SAVE_RESUME_JSON:
+            try:
+                doc = to_resume_json(parsed)
+                json_path = OUTPUT_DIR / f"{job_id}_resume.json"
+                json_path.write_text(
+                    json.dumps(prune_empty(doc.model_dump()), indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                logger.info(
+                    "[%s] JSON written → %s (years=%s, warnings=%d)",
+                    job_id, json_path.name, doc.total_years_experience, len(doc.warnings),
+                )
+                for w in doc.warnings:
+                    logger.warning("[%s] parse warning: %s", job_id, w)
+            except Exception:
+                logger.exception("[%s] JSON export failed (PDF still returned)", job_id)
+                json_path = None
+
         # ── Generate ──────────────────────────────────────────────────────────
         try:
             generate_resume_pdf(
@@ -272,7 +329,7 @@ def _run_pipeline(
             raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
 
         candidate = parsed.get("name", "resume").replace(" ", "_") or "resume"
-        return output_path, f"{candidate}_ATS_Resume.pdf"
+        return output_path, upload_path, json_path, f"{candidate}_ATS_Resume.pdf"
 
     except HTTPException:
         _safe_remove(upload_path)
@@ -310,7 +367,7 @@ async def process_resume(
 ):
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
-    output_path, download_name = _run_pipeline(
+    output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
         watermark=watermark, watermark_text=watermark_text,
         watermark_opacity=watermark_opacity, max_pages=max_pages,
@@ -320,7 +377,8 @@ async def process_resume(
         path=str(output_path),
         media_type="application/pdf",
         filename=download_name,
-        background=_cleanup_task(output_path),
+        # The JSON is kept on purpose; only the temp upload + PDF are removed.
+        background=_cleanup_task(upload_path, output_path),
     )
 
 
@@ -352,7 +410,7 @@ async def format_resume(
 
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
-    output_path, download_name = _run_pipeline(
+    output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
         watermark=watermark, watermark_text=watermark_text,
         watermark_opacity=watermark_opacity, max_pages=max_pages,
@@ -368,7 +426,8 @@ async def format_resume(
             "X-Job-Id": job_id,
             "X-Service-Version": app.version,
         },
-        background=_cleanup_task(output_path),
+        # The JSON is kept on purpose; only the temp upload + PDF are removed.
+        background=_cleanup_task(upload_path, output_path),
     )
 
 
@@ -397,19 +456,24 @@ async def api_health():
         "api_keys_configured": bool(API_KEYS),
         "dotenv_loaded": _DOTENV_AVAILABLE,
         "env_file_present": (Path(__file__).parent / ".env").exists(),
+        "json_export_enabled": SAVE_RESUME_JSON,
     }
+
+
 # ---------------------------------------------------------------------------
 # Cleanup helpers
 # ---------------------------------------------------------------------------
 
-def _cleanup_task(*paths: Path) -> BackgroundTask:
+def _cleanup_task(*paths: Path | None) -> BackgroundTask:
     def _cleanup():
         for p in paths:
             _safe_remove(p)
     return BackgroundTask(_cleanup)
 
 
-def _safe_remove(path: Path):
+def _safe_remove(path: Path | None):
+    if path is None:
+        return
     try:
         if path.exists():
             path.unlink()
