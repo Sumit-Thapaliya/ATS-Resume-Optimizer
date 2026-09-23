@@ -91,6 +91,12 @@ RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 # Write the structured parse result to output/<job_id>_resume.json (default on).
 SAVE_RESUME_JSON = os.getenv("SAVE_RESUME_JSON", "true").strip().lower() in ("1", "true", "yes", "on")
 
+# The watermark is ALWAYS stamped - there is no toggle, on any route.
+# The TEXT is still caller-editable; WATERMARK_TEXT is only the default.
+WATERMARK_ENABLED = True
+WATERMARK_TEXT    = "DRAFT"
+WATERMARK_OPACITY = 0.05
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -360,17 +366,15 @@ async def _read_upload(file: UploadFile) -> tuple[str, bytes]:
 )
 async def process_resume(
     file: UploadFile = File(...),
-    watermark: bool = Form(True),
-    watermark_text: str = Form("DRAFT"),
-    watermark_opacity: float = Form(0.05),
+    watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text"),
     max_pages: int = Form(2),
 ):
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
     output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
-        watermark=watermark, watermark_text=watermark_text,
-        watermark_opacity=watermark_opacity, max_pages=max_pages,
+        watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
+        watermark_opacity=WATERMARK_OPACITY, max_pages=max_pages,
     )
     logger.info("[%s] Done — returning '%s'", job_id, download_name)
     return FileResponse(
@@ -400,9 +404,7 @@ async def process_resume(
 async def format_resume(
     request: Request,
     file: UploadFile = File(..., description="Resume file (.pdf or .docx)"),
-    watermark: bool = Form(False, description="Stamp a diagonal watermark"),
-    watermark_text: str = Form("DRAFT"),
-    watermark_opacity: float = Form(0.05),
+    watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text (always stamped)"),
     max_pages: int = Form(2, description="Page budget, 1-5"),
     _key: str = Depends(require_api_key),
 ):
@@ -412,8 +414,8 @@ async def format_resume(
     filename, contents = await _read_upload(file)
     output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
-        watermark=watermark, watermark_text=watermark_text,
-        watermark_opacity=watermark_opacity, max_pages=max_pages,
+        watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
+        watermark_opacity=WATERMARK_OPACITY, max_pages=max_pages,
     )
 
     logger.info("[%s] API done — returning '%s'", job_id, download_name)
@@ -457,6 +459,7 @@ async def api_health():
         "dotenv_loaded": _DOTENV_AVAILABLE,
         "env_file_present": (Path(__file__).parent / ".env").exists(),
         "json_export_enabled": SAVE_RESUME_JSON,
+        "watermark_forced": WATERMARK_ENABLED,
     }
 
 
