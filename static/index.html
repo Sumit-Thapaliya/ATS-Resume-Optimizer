@@ -1,855 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ATS Resume Optimizer // NEURAL PARSE UNIT</title>
-  <meta name="description"
-    content="Upload your PDF or DOCX resume and instantly receive a professionally reformatted, ATS-friendly PDF. 100% local, no data leaves your machine." />
+  <meta name="description" content="Upload your PDF or DOCX resume and instantly receive a professionally reformatted, ATS-friendly PDF. 100% local, no data leaves your machine." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"
-    rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
 
-  <style>
-    /* ── Reset & base ───────────────────────────────────────────────────── */
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    :root {
-      --bg: #04060d;
-      --bg-deep: #010208;
-      --surface: #070b16;
-      --card: #0a1020;
-      --border: #14304a;
-      --accent: #00f0ff;
-      /* neon cyan */
-      --accent2: #6ff7ff;
-      --magenta: #ff2bd6;
-      --violet: #7b5cff;
-      --success: #00ff9d;
-      --danger: #ff4d6d;
-      --text: #d6f4ff;
-      --muted: #9dbccb;
-      --radius: 4px;
-      --shadow: 0 0 34px rgba(0, 240, 255, .07), 0 0 70px rgba(123, 92, 255, .04);
-      --font-display: 'Orbitron', 'Rajdhani', sans-serif;
-      --font-body: 'Rajdhani', 'Inter', system-ui, sans-serif;
-      --font-mono: 'Share Tech Mono', ui-monospace, monospace;
-    }
-
-    html,
-    body {
-      height: 100%;
-      font-family: var(--font-body);
-      background: var(--bg-deep);
-      color: var(--text);
-      -webkit-font-smoothing: antialiased;
-      letter-spacing: .02em;
-    }
-
-    /* ── Deep-space nebula + vignette ──────────────────────────────────── */
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background:
-        radial-gradient(ellipse 70% 50% at 12% 8%, rgba(0, 240, 255, .14) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 45% at 88% 18%, rgba(255, 43, 214, .12) 0%, transparent 55%),
-        radial-gradient(ellipse 80% 60% at 50% 100%, rgba(123, 92, 255, .16) 0%, transparent 65%),
-        radial-gradient(ellipse 120% 90% at 50% 50%, transparent 45%, rgba(0, 0, 0, .85) 100%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* ── Retro perspective grid floor ──────────────────────────────────── */
-    .grid-floor {
-      position: fixed;
-      left: -60%;
-      right: -60%;
-      bottom: -6%;
-      height: 58vh;
-      background-image:
-        linear-gradient(rgba(0, 240, 255, .22) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 240, 255, .22) 1px, transparent 1px);
-      background-size: 56px 56px;
-      transform: perspective(280px) rotateX(68deg);
-      transform-origin: bottom center;
-      -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, .95), transparent 72%);
-      mask-image: linear-gradient(to top, rgba(0, 0, 0, .95), transparent 72%);
-      animation: grid-scroll 3.2s linear infinite;
-      pointer-events: none;
-      z-index: 0;
-      opacity: .55;
-    }
-
-    @keyframes grid-scroll {
-      to {
-        background-position: 0 56px, 56px 0;
-      }
-    }
-
-    /* ── CRT scanlines + flicker ───────────────────────────────────────── */
-    .scanlines {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 3;
-      background: repeating-linear-gradient(to bottom,
-          rgba(0, 0, 0, 0) 0 2px,
-          rgba(0, 20, 30, .14) 2px 4px);
-      animation: crt-flicker 6s steps(60) infinite;
-    }
-
-    @keyframes crt-flicker {
-
-      0%,
-      96%,
-      100% {
-        opacity: 1;
-      }
-
-      97% {
-        opacity: .82;
-      }
-
-      98% {
-        opacity: 1;
-      }
-
-      99% {
-        opacity: .9;
-      }
-    }
-
-    /* ── Layout ─────────────────────────────────────────────────────────── */
-    .page {
-      position: relative;
-      z-index: 1;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 2.5rem 1rem;
-      gap: 1.75rem;
-    }
-
-    /* ── Header / HUD ───────────────────────────────────────────────────── */
-    .header {
-      text-align: center;
-      position: relative;
-      padding: 1.5rem 2.25rem 1.4rem;
-    }
-
-    /* HUD corner brackets */
-    .header::before,
-    .header::after {
-      content: '';
-      position: absolute;
-      width: 26px;
-      height: 26px;
-      border: 2px solid var(--accent);
-      opacity: .8;
-      filter: drop-shadow(0 0 6px rgba(0, 240, 255, .8));
-    }
-
-    .header::before {
-      top: 0;
-      left: 0;
-      border-right: 0;
-      border-bottom: 0;
-    }
-
-    .header::after {
-      bottom: 0;
-      right: 0;
-      border-left: 0;
-      border-top: 0;
-    }
-
-    .hud-status {
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      letter-spacing: .28em;
-      color: var(--accent);
-      text-transform: uppercase;
-      opacity: .85;
-      margin-bottom: .9rem;
-      text-shadow: 0 0 10px rgba(0, 240, 255, .7);
-    }
-
-    .hud-status .blink {
-      animation: blink 1.1s steps(2) infinite;
-    }
-
-    @keyframes blink {
-      50% {
-        opacity: 0;
-      }
-    }
-
-    h1 {
-      font-family: var(--font-display);
-      font-size: clamp(1.75rem, 5.4vw, 3.1rem);
-      font-weight: 900;
-      line-height: 1.1;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      background: linear-gradient(135deg, #ffffff 0%, var(--accent) 45%, var(--magenta) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-      margin-bottom: .85rem;
-      position: relative;
-      filter: drop-shadow(0 0 18px rgba(0, 240, 255, .45));
-    }
-
-    /* Glitch layers */
-    h1.glitch::before,
-    h1.glitch::after {
-      content: attr(data-text);
-      position: absolute;
-      inset: 0;
-      background: none;
-      -webkit-text-fill-color: initial;
-      pointer-events: none;
-      opacity: .85;
-    }
-
-    h1.glitch::before {
-      color: var(--magenta);
-      clip-path: inset(0 0 58% 0);
-      animation: glitch-top 3.4s infinite steps(2, end);
-    }
-
-    h1.glitch::after {
-      color: var(--accent);
-      clip-path: inset(58% 0 0 0);
-      animation: glitch-bot 2.9s infinite steps(2, end);
-    }
-
-    @keyframes glitch-top {
-
-      0%,
-      88%,
-      100% {
-        transform: translate(0, 0);
-        opacity: 0;
-      }
-
-      90% {
-        transform: translate(-3px, -1px);
-        opacity: .9;
-      }
-
-      93% {
-        transform: translate(3px, 1px);
-        opacity: .7;
-      }
-
-      96% {
-        transform: translate(-1px, 0);
-        opacity: .5;
-      }
-    }
-
-    @keyframes glitch-bot {
-
-      0%,
-      85%,
-      100% {
-        transform: translate(0, 0);
-        opacity: 0;
-      }
-
-      88% {
-        transform: translate(3px, 1px);
-        opacity: .9;
-      }
-
-      92% {
-        transform: translate(-3px, -1px);
-        opacity: .7;
-      }
-
-      95% {
-        transform: translate(2px, 0);
-        opacity: .5;
-      }
-    }
-
-    /* Sweep line across the title */
-    .header .sweep {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      width: 90px;
-      left: -120px;
-      background: linear-gradient(90deg, transparent, rgba(0, 240, 255, .16), transparent);
-      animation: sweep 4.5s linear infinite;
-      pointer-events: none;
-    }
-
-    @keyframes sweep {
-      0% {
-        left: -120px;
-      }
-
-      100% {
-        left: 100%;
-      }
-    }
-
-    .subtitle {
-      font-size: 1rem;
-      font-weight: 500;
-      color: var(--muted);
-      max-width: 500px;
-      line-height: 1.65;
-      margin: 0 auto;
-    }
-
-    .subtitle b {
-      color: var(--accent2);
-      font-weight: 700;
-    }
-
-    /* ── Card (angular HUD panel) ───────────────────────────────────────── */
-    .card {
-      position: relative;
-      background:
-        linear-gradient(160deg, rgba(10, 16, 32, .92) 0%, rgba(4, 8, 18, .96) 100%);
-      border: 1px solid rgba(0, 240, 255, .55);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow), inset 0 0 24px rgba(0, 240, 255, .03);
-      padding: 2.25rem;
-      width: 100%;
-      max-width: 560px;
-      clip-path: polygon(0 18px, 18px 0,
-          calc(100% - 18px) 0, 100% 18px,
-          100% calc(100% - 18px), calc(100% - 18px) 100%,
-          18px 100%, 0 calc(100% - 18px));
-      backdrop-filter: blur(6px);
-    }
-
-    /* animated neon hairline running the card edge */
-        /* animated neon hairline running the card edge */
-    .card::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      border-radius: var(--radius);
-      padding: 1px;
-      background: linear-gradient(115deg,
-          transparent 0%, rgba(0, 240, 255, .22) 20%,
-          transparent 40%, transparent 60%,
-          rgba(255, 43, 214, .20) 80%, transparent 100%);
-      background-size: 300% 100%;
-      animation: edge-run 12s linear infinite;
-      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-      -webkit-mask-composite: xor;
-      mask-composite: exclude;
-      pointer-events: none;
-    }
-
-    @keyframes edge-run {
-      to {
-        background-position: 300% 0;
-      }
-    }
-
-    /* ── Drop zone (dark, glowing inlet) ────────────────────────────────── */
-    #drop-zone {
-      border: 1px dashed rgba(0, 240, 255, .35);
-      border-radius: var(--radius);
-      padding: 2.75rem 1.5rem;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color .25s, background .25s, transform .15s, box-shadow .25s;
-      position: relative;
-      background:
-        radial-gradient(ellipse at 50% 0%, rgba(0, 240, 255, .07), transparent 70%),
-        var(--bg-deep);
-      box-shadow:
-        inset 0 0 30px rgba(0, 240, 255, .10),
-        inset 0 0 8px rgba(0, 0, 0, .9),
-        0 0 18px rgba(0, 240, 255, .10);
-    }
-
-    #drop-zone:hover,
-    #drop-zone.drag-over {
-      border-color: var(--accent);
-      border-style: solid;
-      background:
-        radial-gradient(ellipse at 50% 0%, rgba(0, 240, 255, .16), transparent 70%),
-        var(--bg-deep);
-      transform: scale(1.012);
-      box-shadow:
-        inset 0 0 40px rgba(0, 240, 255, .18),
-        inset 0 0 10px rgba(0, 0, 0, .9),
-        0 0 34px rgba(0, 240, 255, .30);
-    }
-
-    #drop-zone.has-file {
-      border-color: var(--success);
-      border-style: solid;
-      background:
-        radial-gradient(ellipse at 50% 0%, rgba(0, 255, 157, .14), transparent 70%),
-        var(--bg-deep);
-      box-shadow:
-        inset 0 0 36px rgba(0, 255, 157, .16),
-        inset 0 0 10px rgba(0, 0, 0, .9),
-        0 0 30px rgba(0, 255, 157, .28);
-    }
-
-    .drop-title {
-      font-family: var(--font-display);
-      font-size: .95rem;
-      font-weight: 700;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      color: var(--text);
-      margin-bottom: .4rem;
-      text-shadow: 0 0 12px rgba(0, 240, 255, .4);
-    }
-
-    .drop-sub {
-      font-family: var(--font-mono);
-      font-size: .74rem;
-      letter-spacing: .1em;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-
-    #file-input {
-      display: none;
-    }
-
-    #file-name {
-      margin-top: 1rem;
-      display: none;
-      align-items: center;
-      gap: 8px;
-      background: rgba(0, 255, 157, .08);
-      border: 1px solid rgba(0, 255, 157, .35);
-      border-radius: var(--radius);
-      padding: 9px 12px;
-      font-family: var(--font-mono);
-      font-size: .8rem;
-      color: var(--success);
-      font-weight: 500;
-      box-shadow: inset 0 0 18px rgba(0, 255, 157, .08), 0 0 14px rgba(0, 255, 157, .14);
-    }
-
-    #file-name.visible {
-      display: flex;
-    }
-
-    #file-name .fn-icon {
-      font-size: 1.1rem;
-    }
-
-    #file-name .fn-remove {
-      margin-left: auto;
-      cursor: pointer;
-      opacity: .6;
-      font-size: 1.1rem;
-      transition: opacity .15s;
-    }
-
-    #file-name .fn-remove:hover {
-      opacity: 1;
-    }
-
-    /* ── Watermark panel + DARK GLOW INPUT ─────────────────────────────── */
-    .wm-panel {
-      margin-top: 1.25rem;
-      background: rgba(2, 4, 12, .55);
-      border: 1px solid rgba(0, 240, 255, .18);
-      border-radius: var(--radius);
-      padding: 13px 15px;
-      box-shadow: inset 0 0 24px rgba(0, 0, 0, .6);
-    }
-
-    .wm-label {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      cursor: pointer;
-      font-family: var(--font-display);
-      font-size: .72rem;
-      font-weight: 700;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      color: var(--text);
-    }
-
-    .wm-label input[type="checkbox"] {
-      accent-color: var(--accent);
-      width: 16px;
-      height: 16px;
-      filter: drop-shadow(0 0 6px rgba(0, 240, 255, .9));
-    }
-
-    .wm-field-label {
-      display: block;
-      font-family: var(--font-mono);
-      font-size: .68rem;
-      letter-spacing: .18em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }
-
-    /* the darker, glowing text input */
-    .glow-input {
-      width: 100%;
-      background: #01030a;
-      /* darker than the card */
-      border: 1px solid rgba(0, 240, 255, .30);
-      border-radius: var(--radius);
-      padding: 10px 12px;
-      color: var(--accent2);
-      font-family: var(--font-mono);
-      font-size: .85rem;
-      letter-spacing: .08em;
-      outline: none;
-      caret-color: var(--accent);
-      transition: border-color .2s, box-shadow .2s, background .2s;
-      box-shadow:
-        inset 0 0 18px rgba(0, 240, 255, .10),
-        inset 0 2px 8px rgba(0, 0, 0, .95),
-        0 0 10px rgba(0, 240, 255, .10);
-      text-shadow: 0 0 8px rgba(0, 240, 255, .55);
-    }
-
-    .glow-input::placeholder {
-      color: #2f5568;
-      text-shadow: none;
-      letter-spacing: .06em;
-    }
-
-    .glow-input:hover {
-      border-color: rgba(0, 240, 255, .5);
-      box-shadow:
-        inset 0 0 22px rgba(0, 240, 255, .14),
-        inset 0 2px 8px rgba(0, 0, 0, .95),
-        0 0 16px rgba(0, 240, 255, .20);
-    }
-
-    .glow-input:focus {
-      background: #01040d;
-      border-color: var(--accent);
-      box-shadow:
-        inset 0 0 26px rgba(0, 240, 255, .22),
-        inset 0 2px 8px rgba(0, 0, 0, .9),
-        0 0 26px rgba(0, 240, 255, .42),
-        0 0 60px rgba(0, 240, 255, .18);
-    }
-
-    /* ── Submit button ──────────────────────────────────────────────────── */
-    #submit-btn {
-      width: 100%;
-      margin-top: 1.25rem;
-      padding: 15px;
-      border: 1px solid rgba(0, 240, 255, .6);
-      border-radius: var(--radius);
-      background: linear-gradient(135deg, rgba(0, 240, 255, .16) 0%, rgba(123, 92, 255, .20) 100%);
-      color: var(--accent2);
-      font-family: var(--font-display);
-      font-size: .92rem;
-      font-weight: 700;
-      letter-spacing: .18em;
-      text-transform: uppercase;
-      cursor: pointer;
-      transition: opacity .2s, transform .15s, box-shadow .25s, background .25s;
-      box-shadow: 0 0 22px rgba(0, 240, 255, .22), inset 0 0 18px rgba(0, 240, 255, .08);
-      position: relative;
-      overflow: hidden;
-      text-shadow: 0 0 10px rgba(0, 240, 255, .8);
-      clip-path: polygon(0 10px, 10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
-    }
-
-    #submit-btn:hover:not(:disabled) {
-      background: linear-gradient(135deg, rgba(0, 240, 255, .30) 0%, rgba(255, 43, 214, .28) 100%);
-      transform: translateY(-1px);
-      box-shadow: 0 0 40px rgba(0, 240, 255, .45), inset 0 0 24px rgba(0, 240, 255, .14);
-    }
-
-    #submit-btn:disabled {
-      opacity: .35;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-      text-shadow: none;
-    }
-
-    /* ── Progress ───────────────────────────────────────────────────────── */
-    #progress-wrap {
-      display: none;
-      margin-top: 1.25rem;
-      flex-direction: column;
-      gap: .5rem;
-    }
-
-    #progress-wrap.visible {
-      display: flex;
-    }
-
-    .progress-bar-bg {
-      height: 6px;
-      background: #02040c;
-      border: 1px solid rgba(0, 240, 255, .18);
-      border-radius: 100px;
-      overflow: hidden;
-      box-shadow: inset 0 0 10px rgba(0, 0, 0, .9);
-    }
-
-    .progress-bar-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, var(--accent), var(--violet), var(--magenta));
-      border-radius: 100px;
-      transition: width .4s ease;
-      animation: progress-anim 2s ease-in-out infinite alternate;
-      box-shadow: 0 0 14px rgba(0, 240, 255, .9);
-    }
-
-    @keyframes progress-anim {
-      from {
-        opacity: .7;
-      }
-
-      to {
-        opacity: 1;
-      }
-    }
-
-    .progress-label {
-      font-family: var(--font-mono);
-      font-size: .72rem;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-    }
-
-    /* ── Steps ──────────────────────────────────────────────────────────── */
-    .steps {
-      margin-top: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: .4rem;
-    }
-
-    .step {
-      display: flex;
-      align-items: center;
-      gap: .6rem;
-      font-family: var(--font-mono);
-      font-size: .78rem;
-      letter-spacing: .04em;
-      color: var(--muted);
-      transition: color .3s, text-shadow .3s;
-    }
-
-    .step.active {
-      color: var(--accent);
-      text-shadow: 0 0 10px rgba(0, 240, 255, .6);
-    }
-
-    .step.done {
-      color: var(--success);
-      text-shadow: 0 0 10px rgba(0, 255, 157, .5);
-    }
-
-    .step-dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 1px solid currentColor;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: .62rem;
-      flex-shrink: 0;
-      transition: background .3s, border-color .3s;
-    }
-
-    .step.done .step-dot {
-      background: var(--success);
-      border-color: var(--success);
-      color: #01110a;
-      box-shadow: 0 0 12px rgba(0, 255, 157, .8);
-    }
-
-    .step.active .step-dot {
-      border-color: var(--accent);
-      animation: pulse-dot 1s infinite;
-    }
-
-    @keyframes pulse-dot {
-
-      0%,
-      100% {
-        box-shadow: 0 0 0 0 rgba(0, 240, 255, .5);
-      }
-
-      50% {
-        box-shadow: 0 0 0 6px rgba(0, 240, 255, 0);
-      }
-    }
-
-    /* ── Result / error ─────────────────────────────────────────────────── */
-    #result-box {
-      display: none;
-      margin-top: 1.25rem;
-      border-radius: var(--radius);
-      padding: 1rem 1.2rem;
-      font-family: var(--font-mono);
-      font-size: .82rem;
-      align-items: center;
-      gap: .75rem;
-    }
-
-    #result-box.visible {
-      display: flex;
-    }
-
-    #result-box.success {
-      background: rgba(0, 255, 157, .07);
-      border: 1px solid rgba(0, 255, 157, .4);
-      color: var(--success);
-      box-shadow: inset 0 0 22px rgba(0, 255, 157, .07), 0 0 20px rgba(0, 255, 157, .14);
-    }
-
-    #result-box.error {
-      background: rgba(255, 77, 109, .07);
-      border: 1px solid rgba(255, 77, 109, .4);
-      color: var(--danger);
-      box-shadow: inset 0 0 22px rgba(255, 77, 109, .07), 0 0 20px rgba(255, 77, 109, .14);
-    }
-
-    #result-box .rb-icon {
-      font-size: 1.4rem;
-      flex-shrink: 0;
-    }
-
-    #result-box .rb-text {
-      flex: 1;
-      line-height: 1.45;
-    }
-
-    #result-box .rb-action {
-      flex-shrink: 0;
-    }
-
-    .dl-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      border-radius: var(--radius);
-      background: rgba(0, 255, 157, .18);
-      border: 1px solid var(--success);
-      color: var(--success);
-      font-family: var(--font-display);
-      font-weight: 700;
-      font-size: .72rem;
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      text-decoration: none;
-      cursor: pointer;
-      transition: opacity .2s, transform .15s, box-shadow .2s;
-      box-shadow: 0 0 16px rgba(0, 255, 157, .25);
-    }
-
-    .dl-btn:hover {
-      opacity: .9;
-      transform: translateY(-1px);
-      box-shadow: 0 0 26px rgba(0, 255, 157, .45);
-    }
-
-    /* ── Feature pills ──────────────────────────────────────────────────── */
-    .features {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: .6rem;
-    }
-
-    .feature {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(0, 240, 255, .04);
-      border: 1px solid rgba(0, 240, 255, .18);
-      border-radius: 2px;
-      padding: 6px 14px;
-      font-family: var(--font-mono);
-      font-size: .72rem;
-      letter-spacing: .06em;
-      color: var(--muted);
-      transition: border-color .2s, color .2s, box-shadow .2s;
-    }
-
-    .feature:hover {
-      border-color: rgba(0, 240, 255, .55);
-      color: var(--accent2);
-      box-shadow: 0 0 16px rgba(0, 240, 255, .18);
-    }
-
-    /* ── Spinner ────────────────────────────────────────────────────────── */
-    .spinner {
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid rgba(255, 255, 255, .3);
-      border-top-color: #fff;
-      border-radius: 50%;
-      animation: spin .65s linear infinite;
-      vertical-align: middle;
-      margin-right: 8px;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    /* ── Footer ─────────────────────────────────────────────────────────── */
-    footer {
-      font-family: var(--font-mono);
-      font-size: .7rem;
-      letter-spacing: .14em;
-      text-transform: uppercase;
-      color: var(--muted);
-      opacity: .55;
-      text-align: center;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-
-      *,
-      *::before,
-      *::after {
-        animation: none !important;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
-
 <body>
   <div class="grid-floor" aria-hidden="true"></div>
   <div class="scanlines" aria-hidden="true"></div>
@@ -875,31 +36,26 @@
 
       <!-- Drop zone -->
       <div id="drop-zone" role="button" tabindex="0" aria-label="Upload PDF or DOCX resume"
-        onclick="document.getElementById('file-input').click()">
+           onclick="document.getElementById('file-input').click()">
         <p class="drop-title">Drag &amp; drop your resume</p>
         <p class="drop-sub">PDF or DOCX &nbsp;·&nbsp; click to browse &nbsp;·&nbsp; max 20 MB</p>
-        <input type="file" id="file-input"
-          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+        <input type="file" id="file-input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
       </div>
 
       <!-- Selected file name -->
       <div id="file-name" role="status">
         <span class="fn-icon" aria-hidden="true">📎</span>
         <span id="fn-label">—</span>
-        <span class="fn-remove" id="fn-remove" role="button" tabindex="0" aria-label="Remove selected file">✕</span>
+        <span class="fn-remove" id="fn-remove" role="button" tabindex="0"
+              aria-label="Remove selected file">✕</span>
       </div>
 
-      <!-- Watermark Options -->
+      <!-- Watermark: always stamped. Only the TEXT is editable. -->
       <div class="wm-panel">
-        <label class="wm-label">
-          <input type="checkbox" id="wm-toggle" checked
-            onchange="document.getElementById('wm-text-wrap').style.display = this.checked ? 'block' : 'none'" />
-          Stamp Diagonal Watermark
-        </label>
-        <div id="wm-text-wrap" style="margin-top: 9px;">
-          <label class="wm-field-label" for="wm-text">Watermark Text</label>
-          <input type="text" id="wm-text" class="glow-input" value="DRAFT" placeholder="e.g. DRAFT, CONFIDENTIAL" />
-        </div>
+        <label class="wm-field-label" for="wm-text">Watermark Text</label>
+        <input type="text" id="wm-text" class="glow-input" value="DRAFT"
+               maxlength="40" placeholder="e.g. DRAFT, CONFIDENTIAL" />
+        <p class="wm-note">Always stamped on every generated resume.</p>
       </div>
 
       <!-- Page limit -->
@@ -973,20 +129,20 @@
     let isProcessing = false;
 
     // ── Elements ──────────────────────────────────────────────────────────
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-input');
+    const dropZone    = document.getElementById('drop-zone');
+    const fileInput   = document.getElementById('file-input');
     const fileNameBox = document.getElementById('file-name');
-    const fnLabel = document.getElementById('fn-label');
-    const fnRemove = document.getElementById('fn-remove');
-    const submitBtn = document.getElementById('submit-btn');
-    const progressWrap = document.getElementById('progress-wrap');
-    const progressFill = document.getElementById('progress-fill');
+    const fnLabel     = document.getElementById('fn-label');
+    const fnRemove    = document.getElementById('fn-remove');
+    const submitBtn   = document.getElementById('submit-btn');
+    const progressWrap= document.getElementById('progress-wrap');
+    const progressFill= document.getElementById('progress-fill');
     const progressTxt = document.getElementById('progress-text');
     const progressPct = document.getElementById('progress-pct');
-    const resultBox = document.getElementById('result-box');
-    const rbIcon = document.getElementById('rb-icon');
-    const rbText = document.getElementById('rb-text');
-    const rbAction = document.getElementById('rb-action');
+    const resultBox   = document.getElementById('result-box');
+    const rbIcon      = document.getElementById('rb-icon');
+    const rbText      = document.getElementById('rb-text');
+    const rbAction    = document.getElementById('rb-action');
 
     // ── File selection ─────────────────────────────────────────────────────
     fileInput.addEventListener('change', () => {
@@ -1047,10 +203,10 @@
     let currentStep = -1;
 
     const STEPS = [
-      { id: 'step-0', label: 'Extracting text…', pct: 25 },
-      { id: 'step-1', label: 'Parsing sections…', pct: 55 },
-      { id: 'step-2', label: 'Rendering ATS PDF…', pct: 85 },
-      { id: 'step-3', label: 'Finalising…', pct: 98 },
+      { id: 'step-0', label: 'Extracting text…',      pct: 25 },
+      { id: 'step-1', label: 'Parsing sections…',   pct: 55 },
+      { id: 'step-2', label: 'Rendering ATS PDF…',    pct: 85 },
+      { id: 'step-3', label: 'Finalising…',         pct: 98 },
     ];
 
     function startProgress() {
@@ -1109,12 +265,11 @@
       resetSteps();
       startProgress();
 
-      const wmToggle = document.getElementById('wm-toggle');
       const wmTextInput = document.getElementById('wm-text');
 
       const formData = new FormData();
       formData.append('file', selectedFile);
-      formData.append('watermark', wmToggle && wmToggle.checked ? 'true' : 'false');
+      // Watermark is always on; only the text is user-editable.
       formData.append('watermark_text', (wmTextInput && wmTextInput.value.trim()) || 'DRAFT');
       const mpSel = document.getElementById('max-pages');
       formData.append('max_pages', (mpSel && mpSel.value) || '2');
@@ -1162,31 +317,29 @@
 
     // ── Result helpers ─────────────────────────────────────────────────────
     function showSuccess(filename) {
-      resultBox.className = 'result-box visible success';
+      resultBox.classList.remove('error');
+      resultBox.classList.add('success', 'visible');
       rbIcon.textContent = '✅';
       rbText.innerHTML = `<strong>Success!</strong> Your ATS resume is downloading as <em>${escHtml(filename)}</em>.`;
       rbAction.innerHTML = '';
-      resultBox.classList.add('visible');
     }
 
     function showError(msg) {
-      resultBox.className = 'result-box visible error';
+      resultBox.classList.remove('success');
+      resultBox.classList.add('error', 'visible');
       rbIcon.textContent = '⚠️';
       rbText.innerHTML = `<strong>Error:</strong> ${escHtml(msg)}`;
       rbAction.innerHTML = '<button class="dl-btn" onclick="hideResult()" style="background:var(--danger);color:#fff;">Dismiss</button>';
-      resultBox.classList.add('visible');
     }
 
     function hideResult() {
-      resultBox.classList.remove('visible');
-      resultBox.className = 'result-box';
+      resultBox.classList.remove('visible', 'success', 'error');
       progressWrap.classList.remove('visible');
     }
 
     function escHtml(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
   </script>
 </body>
-
 </html>
