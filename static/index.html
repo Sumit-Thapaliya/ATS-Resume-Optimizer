@@ -53,7 +53,7 @@
       <!-- Watermark: always stamped. Only the TEXT is editable. -->
       <div class="wm-panel">
         <label class="wm-field-label" for="wm-text">Watermark Text</label>
-        <input type="text" id="wm-text" class="glow-input" value="DRAFT"
+        <input type="text" id="wm-text" class="glow-input" value="JOBDEV"
                maxlength="40" placeholder="e.g. DRAFT, CONFIDENTIAL" />
         <p class="wm-note">Always stamped on every generated resume.</p>
       </div>
@@ -62,8 +62,8 @@
       <div class="wm-panel" style="margin-top: .75rem;">
         <label class="wm-field-label" for="max-pages">Page Limit</label>
         <select id="max-pages" class="glow-input" style="cursor:pointer;">
-          <option value="1">1 page — forces trimming if content overflows</option>
-          <option value="2" selected>2 pages — keeps all content (recommended)</option>
+          <option value="1" selected>1 page — forces trimming if content overflows</option>
+          <option value="2">2 pages — keeps all content (recommended)</option>
           <option value="3">3 pages — maximum detail</option>
         </select>
       </div>
@@ -269,10 +269,10 @@
 
       const formData = new FormData();
       formData.append('file', selectedFile);
-      // Watermark is always on; only the text is user-editable.
+
       formData.append('watermark_text', (wmTextInput && wmTextInput.value.trim()) || 'DRAFT');
       const mpSel = document.getElementById('max-pages');
-      formData.append('max_pages', (mpSel && mpSel.value) || '2');
+      formData.append('max_pages', (mpSel && mpSel.value) || '1');
 
       try {
         const resp = await fetch('/process', {
