@@ -13,6 +13,7 @@ Routes:
   POST /v1/format   → same, but API-key protected + rate limited    (machine-to-machine)
   GET  /health      → liveness probe
   GET  /v1/health   → liveness probe (public, no key)
+  GET  /v1/parse/{job_id} → the extracted JSON for a job (only after /v1/format)
 
 Side artifact: every successful parse is also written to
   output/<job_id>_resume.json   (disable with SAVE_RESUME_JSON=false)
@@ -121,6 +122,11 @@ app = FastAPI(
     ),
     version="2.0.0",
 )
+# CORS: browser callers on other origins (React/Next, external sites) send an
+# OPTIONS preflight before the real POST because of the X-API-Key header.
+# Without this middleware that preflight got 405 and the browser blocked the call.
+# The API key still guards every /v1 route — CORS only opens the door for the
+# browser's HTTP handshake; nothing here weakens auth or the rate limit.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],                                  # set to ["http://localhost:3000"] etc. to lock down
@@ -375,7 +381,7 @@ async def _read_upload(file: UploadFile) -> tuple[str, bytes]:
 async def process_resume(
     file: UploadFile = File(...),
     watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text"),
-  max_pages: int = Form(1),
+    max_pages: int = Form(1),
 ):
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
@@ -427,17 +433,78 @@ async def format_resume(
     )
 
     logger.info("[%s] API done — returning '%s'", job_id, download_name)
+    headers = {
+        # Useful for callers debugging their integration
+        "X-Job-Id": job_id,
+        "X-Service-Version": app.version,
+    }
+    if json_path is not None:
+        # Where the caller can fetch the extracted JSON (same API key).
+        headers["X-Resume-Json-Url"] = f"/v1/parse/{job_id}"
     return FileResponse(
         path=str(output_path),
         media_type="application/pdf",
         filename=download_name,
-        headers={
-            # Useful for callers debugging their integration
-            "X-Job-Id": job_id,
-            "X-Service-Version": app.version,
-        },
+        headers=headers,
         # The JSON is kept on purpose; only the temp upload + PDF are removed.
         background=_cleanup_task(upload_path, output_path),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route: fetch the extracted JSON — ONLY possible after a /v1/format run
+# ---------------------------------------------------------------------------
+
+_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+@app.get(
+    "/v1/parse/{job_id}",
+    summary="[API] Fetch the extracted JSON for a job id returned by /v1/format (key required)",
+    response_class=JSONResponse,
+    responses={
+        401: {"description": "Missing or invalid API key"},
+        404: {"description": "No stored JSON for this job id"},
+        429: {"description": "Rate limit exceeded"},
+    },
+)
+async def fetch_resume_json(
+    job_id: str,
+    request: Request,
+    _key: str = Depends(require_api_key),
+):
+    """
+    Two-step by design: there is nothing to parse here — the caller must
+    FIRST POST the resume to /v1/format, which parses it, stamps the ATS
+    PDF, and saves output/<job_id>_resume.json. This route only hands that
+    stored JSON back. A job id that never went through /v1/format simply
+    does not exist -> 404.
+
+    Same X-API-Key as /v1/format. The PDF is deleted right after its
+    response (privacy design); the JSON is kept, so it stays fetchable.
+    """
+    enforce_rate_limit(request)
+
+    # Strict hex check — also blocks traversal attempts like ../../etc/passwd
+    if not _JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+
+    json_path = OUTPUT_DIR / f"{job_id}_resume.json"
+    if not json_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="No stored JSON for this job (wrong id, already removed, "
+                   "or the server runs with SAVE_RESUME_JSON=false).",
+        )
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.exception("[%s] stored JSON unreadable", job_id)
+        raise HTTPException(status_code=500, detail="Stored JSON is unreadable.")
+
+    return JSONResponse(
+        content=data,
+        headers={"X-Job-Id": job_id, "X-Service-Version": app.version},
     )
 
 
@@ -461,7 +528,11 @@ async def api_health():
         "status": "ok" if API_KEYS else "misconfigured",
         "service": "resume-service",
         "version": app.version,
-        "endpoints": {"format": "POST /v1/format", "auth": "X-API-Key header"},
+        "endpoints": {
+            "format": "POST /v1/format",
+            "parse_json": "GET /v1/parse/{job_id}",
+            "auth": "X-API-Key header",
+        },
         "rate_limit_per_minute": RATE_LIMIT_PER_MIN,
         "api_keys_configured": bool(API_KEYS),
         "dotenv_loaded": _DOTENV_AVAILABLE,
