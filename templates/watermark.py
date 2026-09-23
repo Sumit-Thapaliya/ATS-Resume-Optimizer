@@ -25,7 +25,7 @@ from reportlab.lib.pagesizes import LETTER
 # ---------------------------------------------------------------------------
 # Default watermark settings
 # ---------------------------------------------------------------------------
-DEFAULT_TEXT      = "DRAFT"
+DEFAULT_TEXT      = "JOBDEV"
 DEFAULT_FONT      = "Helvetica-Bold"
 DEFAULT_FONT_SIZE = 64
 DEFAULT_COLOR     = colors.HexColor("#D0D0D0")
