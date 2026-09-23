@@ -44,6 +44,7 @@ except ImportError:
     )
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -94,7 +95,7 @@ SAVE_RESUME_JSON = os.getenv("SAVE_RESUME_JSON", "true").strip().lower() in ("1"
 # The watermark is ALWAYS stamped - there is no toggle, on any route.
 # The TEXT is still caller-editable; WATERMARK_TEXT is only the default.
 WATERMARK_ENABLED = True
-WATERMARK_TEXT    = "DRAFT"
+WATERMARK_TEXT    = "JOBDEV"
 WATERMARK_OPACITY = 0.05
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,13 @@ app = FastAPI(
         "**Humans:** open `/` in a browser."
     ),
     version="2.0.0",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],                                  # set to ["http://localhost:3000"] etc. to lock down
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["X-API-Key", "Content-Type"],
+    expose_headers=["X-Job-Id", "X-Resume-Json-Url", "Content-Disposition"],
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -367,7 +375,7 @@ async def _read_upload(file: UploadFile) -> tuple[str, bytes]:
 async def process_resume(
     file: UploadFile = File(...),
     watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text"),
-    max_pages: int = Form(2),
+  max_pages: int = Form(1),
 ):
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
@@ -405,7 +413,7 @@ async def format_resume(
     request: Request,
     file: UploadFile = File(..., description="Resume file (.pdf or .docx)"),
     watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text (always stamped)"),
-    max_pages: int = Form(2, description="Page budget, 1-5"),
+    max_pages: int = Form(1, description="Page budget, 1-5 (default: 1)"),
     _key: str = Depends(require_api_key),
 ):
     enforce_rate_limit(request)
