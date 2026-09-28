@@ -130,7 +130,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],                                  # set to ["http://localhost:3000"] etc. to lock down
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["X-API-Key", "Content-Type"],
     expose_headers=["X-Job-Id", "X-Resume-Json-Url", "Content-Disposition"],
 )
@@ -567,6 +567,8 @@ def _safe_remove(path: Path | None):
 # ---------------------------------------------------------------------------
 # Dev runner  (Render sets $PORT; default 8000 locally)
 if __name__ == "__main__":
+    from resume_draft import router as resume_draft_router
+    app.include_router(resume_draft_router)
     import uvicorn
     uvicorn.run(
         "main:app",
