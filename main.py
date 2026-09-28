@@ -44,7 +44,7 @@ except ImportError:
         stacklevel=1,
     )
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,9 +75,10 @@ BASE_DIR    = Path(__file__).parent
 UPLOAD_DIR  = BASE_DIR / "uploads"
 OUTPUT_DIR  = BASE_DIR / "output"
 STATIC_DIR  = BASE_DIR / "static"
+DRAFT_DIR = BASE_DIR / "data" / "resume_drafts"
 
-for d in (UPLOAD_DIR, OUTPUT_DIR):
-    d.mkdir(exist_ok=True)
+for d in (UPLOAD_DIR, OUTPUT_DIR, DRAFT_DIR):
+    d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Config (all from environment — never hardcode secrets)
@@ -507,7 +508,101 @@ async def fetch_resume_json(
         headers={"X-Job-Id": job_id, "X-Service-Version": app.version},
     )
 
+# ---------------------------------------------------------------------------
+# Editable canvas draft
+# ---------------------------------------------------------------------------
 
+_CANVAS_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _validate_canvas_job(job_id: str) -> None:
+    if not _CANVAS_JOB_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+
+    original_json = OUTPUT_DIR / f"{job_id}_resume.json"
+
+    if not original_json.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="No formatted resume JSON exists for this job id.",
+        )
+
+
+@app.put(
+    "/v1/resume/{job_id}/canvas",
+    summary="Save or overwrite an editable resume draft",
+)
+async def save_canvas(
+    job_id: str,
+    request: Request,
+    draft: dict = Body(...),
+    _key: str = Depends(require_api_key),
+):
+    enforce_rate_limit(request)
+    _validate_canvas_job(job_id)
+
+    draft_path = DRAFT_DIR / f"{job_id}.json"
+
+    try:
+        draft_path.write_text(
+            json.dumps(
+                draft,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not save draft: {exc}",
+        )
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "saved_at": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(),
+        ),
+    }
+
+
+@app.get(
+    "/v1/resume/{job_id}/canvas",
+    summary="Read the saved editable resume draft",
+    response_class=JSONResponse,
+)
+async def read_canvas(
+    job_id: str,
+    request: Request,
+    _key: str = Depends(require_api_key),
+):
+    enforce_rate_limit(request)
+    _validate_canvas_job(job_id)
+
+    draft_path = DRAFT_DIR / f"{job_id}.json"
+
+    if not draft_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="No saved edit yet.",
+        )
+
+    try:
+        draft = json.loads(
+            draft_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(
+            status_code=500,
+            detail="Saved draft is unreadable.",
+        )
+
+    return JSONResponse(
+        content=draft,
+        headers={"X-Job-Id": job_id},
+    )
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
