@@ -10,10 +10,11 @@ Two surfaces:
 Routes:
   GET  /            → serve the frontend HTML
   POST /process     → accept PDF/DOCX, return reformatted ATS PDF   (web UI)
-  POST /v1/format   → same, but API-key protected + rate limited    (machine-to-machine)
+  POST /v1/format   → parse PDF/DOCX and return structured JSON  (machine-to-machine)
   GET  /health      → liveness probe
   GET  /v1/health   → liveness probe (public, no key)
   GET  /v1/parse/{job_id} → the extracted JSON for a job (only after /v1/format)
+  GET/PUT /v1/resume/{job_id}/canvas → read/save the editable draft
 
 Side artifact: every successful parse is also written to
   output/<job_id>_resume.json   (disable with SAVE_RESUME_JSON=false)
@@ -44,7 +45,7 @@ except ImportError:
         stacklevel=1,
     )
 
-from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,10 +76,9 @@ BASE_DIR    = Path(__file__).parent
 UPLOAD_DIR  = BASE_DIR / "uploads"
 OUTPUT_DIR  = BASE_DIR / "output"
 STATIC_DIR  = BASE_DIR / "static"
-DRAFT_DIR = BASE_DIR / "data" / "resume_drafts"
 
-for d in (UPLOAD_DIR, OUTPUT_DIR, DRAFT_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+for d in (UPLOAD_DIR, OUTPUT_DIR):
+    d.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Config (all from environment — never hardcode secrets)
@@ -117,9 +117,9 @@ app = FastAPI(
     lifespan=_lifespan,
     title="Resume Service",
     description=(
-        "Upload a PDF or DOCX resume, get an ATS-optimised PDF back.\n\n"
+        "Upload a PDF or DOCX resume, get structured JSON from the API.\n\n"
         "**Machine callers:** `POST /v1/format` with header `X-API-Key: <key>`.\n"
-        "**Humans:** open `/` in a browser."
+        "**Humans:** open `/` in a browser for an ATS PDF."
     ),
     version="2.0.0",
 )
@@ -247,9 +247,10 @@ def _run_pipeline(
     watermark_text: str,
     watermark_opacity: float,
     max_pages: int,
+    generate_pdf: bool = True,
 ) -> tuple[Path, Path, Path | None, str]:
     """
-    Validate → save → extract → parse → generate.
+    Validate → save → extract → parse → optionally generate.
     Returns (output_path, upload_path, json_path, download_filename).
     Raises HTTPException on any failure.
     """
@@ -315,7 +316,7 @@ def _run_pipeline(
 
         # ── Structured JSON ───────────────────────────────────────────────────
         # Side artifact: only what was actually found on THIS resume is written.
-        # Never fails the request - the PDF is the product, the JSON is a bonus.
+        # The PDF route treats JSON as a bonus; the JSON API checks that it exists.
         json_path: Path | None = None
         if SAVE_RESUME_JSON:
             try:
@@ -335,19 +336,23 @@ def _run_pipeline(
                 logger.exception("[%s] JSON export failed (PDF still returned)", job_id)
                 json_path = None
 
-        # ── Generate ──────────────────────────────────────────────────────────
-        try:
-            generate_resume_pdf(
-                parsed,
-                str(output_path),
-                watermark=watermark,
-                watermark_text=watermark_text,
-                watermark_opacity=watermark_opacity,
-                max_pages=max(1, min(max_pages, 5)),
-            )
-        except Exception as exc:
-            logger.exception("[%s] PDF generation failed", job_id)
-            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+        # ── Generate PDF when the caller needs one ───────────────────────────
+        # The machine API now returns JSON, so it can skip PDF generation.
+        if generate_pdf:
+            try:
+                generate_resume_pdf(
+                    parsed,
+                    str(output_path),
+                    watermark=watermark,
+                    watermark_text=watermark_text,
+                    watermark_opacity=watermark_opacity,
+                    max_pages=max(1, min(max_pages, 5)),
+                )
+            except Exception as exc:
+                logger.exception("[%s] PDF generation failed", job_id)
+                raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+        else:
+            logger.info("[%s] PDF generation skipped — JSON API response", job_id)
 
         candidate = parsed.get("name", "resume").replace(" ", "_") or "resume"
         return output_path, upload_path, json_path, f"{candidate}_ATS_Resume.pdf"
@@ -407,8 +412,8 @@ async def process_resume(
 
 @app.post(
     "/v1/format",
-    summary="[API] Upload a resume, receive an ATS PDF (requires X-API-Key)",
-    response_class=FileResponse,
+    summary="[API] Upload a resume, receive structured JSON (requires X-API-Key)",
+    response_class=JSONResponse,
     responses={
         401: {"description": "Missing or invalid API key"},
         415: {"description": "Unsupported file type (PDF and DOCX only)"},
@@ -427,27 +432,40 @@ async def format_resume(
 
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
-    output_path, upload_path, json_path, download_name = _run_pipeline(
+    output_path, upload_path, json_path, _download_name = _run_pipeline(
         job_id, filename, contents,
         watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
         watermark_opacity=WATERMARK_OPACITY, max_pages=max_pages,
+        generate_pdf=False,
     )
 
-    logger.info("[%s] API done — returning '%s'", job_id, download_name)
+    # JSON export is required for this API response. The pipeline normally
+    # treats JSON as a bonus for the PDF route, but /v1/format is now JSON-only.
+    if json_path is None:
+        _safe_remove(upload_path)
+        _safe_remove(output_path)
+        raise HTTPException(
+            status_code=500,
+            detail="JSON export failed; no JSON response is available.",
+        )
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _safe_remove(upload_path)
+        _safe_remove(output_path)
+        raise HTTPException(status_code=500, detail="Stored JSON is unreadable.")
+
+    logger.info("[%s] API done — returning JSON", job_id)
     headers = {
-        # Useful for callers debugging their integration
         "X-Job-Id": job_id,
         "X-Service-Version": app.version,
+        "X-Resume-Json-Url": f"/v1/parse/{job_id}",
     }
-    if json_path is not None:
-        # Where the caller can fetch the extracted JSON (same API key).
-        headers["X-Resume-Json-Url"] = f"/v1/parse/{job_id}"
-    return FileResponse(
-        path=str(output_path),
-        media_type="application/pdf",
-        filename=download_name,
+    return JSONResponse(
+        content=data,
         headers=headers,
-        # The JSON is kept on purpose; only the temp upload + PDF are removed.
+        # Keep the JSON artifact; remove only the temporary upload and any PDF.
         background=_cleanup_task(upload_path, output_path),
     )
 
@@ -475,10 +493,9 @@ async def fetch_resume_json(
     _key: str = Depends(require_api_key),
 ):
     """
-    Two-step by design: there is nothing to parse here — the caller must
-    FIRST POST the resume to /v1/format, which parses it, stamps the ATS
-    PDF, and saves output/<job_id>_resume.json. This route only hands that
-    stored JSON back. A job id that never went through /v1/format simply
+    Two-step retrieval by design: POST /v1/format parses the upload
+    and saves output/<job_id>_resume.json. This route hands that stored
+    JSON back using the job ID from the POST response. A job id that never went through /v1/format simply
     does not exist -> 404.
 
     Same X-API-Key as /v1/format. The PDF is deleted right after its
@@ -508,101 +525,7 @@ async def fetch_resume_json(
         headers={"X-Job-Id": job_id, "X-Service-Version": app.version},
     )
 
-# ---------------------------------------------------------------------------
-# Editable canvas draft
-# ---------------------------------------------------------------------------
 
-_CANVAS_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
-
-
-def _validate_canvas_job(job_id: str) -> None:
-    if not _CANVAS_JOB_ID_RE.fullmatch(job_id):
-        raise HTTPException(status_code=404, detail="Unknown job id.")
-
-    original_json = OUTPUT_DIR / f"{job_id}_resume.json"
-
-    if not original_json.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="No formatted resume JSON exists for this job id.",
-        )
-
-
-@app.put(
-    "/v1/resume/{job_id}/canvas",
-    summary="Save or overwrite an editable resume draft",
-)
-async def save_canvas(
-    job_id: str,
-    request: Request,
-    draft: dict = Body(...),
-    _key: str = Depends(require_api_key),
-):
-    enforce_rate_limit(request)
-    _validate_canvas_job(job_id)
-
-    draft_path = DRAFT_DIR / f"{job_id}.json"
-
-    try:
-        draft_path.write_text(
-            json.dumps(
-                draft,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not save draft: {exc}",
-        )
-
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "saved_at": time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(),
-        ),
-    }
-
-
-@app.get(
-    "/v1/resume/{job_id}/canvas",
-    summary="Read the saved editable resume draft",
-    response_class=JSONResponse,
-)
-async def read_canvas(
-    job_id: str,
-    request: Request,
-    _key: str = Depends(require_api_key),
-):
-    enforce_rate_limit(request)
-    _validate_canvas_job(job_id)
-
-    draft_path = DRAFT_DIR / f"{job_id}.json"
-
-    if not draft_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail="No saved edit yet.",
-        )
-
-    try:
-        draft = json.loads(
-            draft_path.read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        raise HTTPException(
-            status_code=500,
-            detail="Saved draft is unreadable.",
-        )
-
-    return JSONResponse(
-        content=draft,
-        headers={"X-Job-Id": job_id},
-    )
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -624,8 +547,9 @@ async def api_health():
         "service": "resume-service",
         "version": app.version,
         "endpoints": {
-            "format": "POST /v1/format",
+            "format": "POST /v1/format → JSON",
             "parse_json": "GET /v1/parse/{job_id}",
+            "canvas_draft": "GET/PUT /v1/resume/{job_id}/canvas",
             "auth": "X-API-Key header",
         },
         "rate_limit_per_minute": RATE_LIMIT_PER_MIN,
@@ -660,10 +584,18 @@ def _safe_remove(path: Path | None):
 
 
 # ---------------------------------------------------------------------------
+# Editable canvas-draft routes
+# ---------------------------------------------------------------------------
+# Imported at the bottom so resume_draft.py can reuse the auth and rate-limit
+# helpers at request time without creating an import cycle.
+from resume_draft import router as resume_draft_router
+
+app.include_router(resume_draft_router)
+
+
+# ---------------------------------------------------------------------------
 # Dev runner  (Render sets $PORT; default 8000 locally)
 if __name__ == "__main__":
-    from resume_draft import router as resume_draft_router
-    app.include_router(resume_draft_router)
     import uvicorn
     uvicorn.run(
         "main:app",
