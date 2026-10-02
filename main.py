@@ -471,6 +471,58 @@ async def format_resume(
 
 
 # ---------------------------------------------------------------------------
+# Route: public API — same upload, but the ATS PDF comes back
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/v1/format/pdf",
+    summary="[API] Upload a resume, receive the ATS PDF (requires X-API-Key)",
+    response_class=FileResponse,
+    responses={
+        200: {"content": {"application/pdf": {}}, "description": "ATS-formatted PDF"},
+        401: {"description": "Missing or invalid API key"},
+        415: {"description": "Unsupported file type (PDF and DOCX only)"},
+        422: {"description": "File has no extractable text (e.g. scanned image)"},
+        429: {"description": "Rate limit exceeded"},
+    },
+)
+async def format_resume_pdf(
+    request: Request,
+    file: UploadFile = File(..., description="Resume file (.pdf or .docx)"),
+    watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text (always stamped)"),
+    max_pages: int = Form(1, description="Page budget, 1-5 (default: 1)"),
+    _key: str = Depends(require_api_key),
+):
+    enforce_rate_limit(request)
+
+    job_id = uuid.uuid4().hex
+    filename, contents = await _read_upload(file)
+    output_path, upload_path, json_path, download_name = _run_pipeline(
+        job_id, filename, contents,
+        watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
+        watermark_opacity=WATERMARK_OPACITY, max_pages=max_pages,
+        generate_pdf=True,
+    )
+
+    logger.info("[%s] API done — returning PDF '%s'", job_id, download_name)
+    headers = {
+        "X-Job-Id": job_id,
+        "X-Service-Version": app.version,
+        # The JSON artifact for this same upload stays fetchable by job id.
+        "X-Resume-Json-Url": f"/v1/parse/{job_id}" if json_path else "",
+        "Access-Control-Expose-Headers": "X-Job-Id, X-Service-Version, X-Resume-Json-Url",
+    }
+    return FileResponse(
+        path=str(output_path),
+        media_type="application/pdf",
+        filename=download_name,
+        headers=headers,
+        # Keep the JSON artifact; remove only the temp upload and the sent PDF.
+        background=_cleanup_task(upload_path, output_path),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Route: fetch the extracted JSON — ONLY possible after a /v1/format run
 # ---------------------------------------------------------------------------
 
