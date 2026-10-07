@@ -83,7 +83,32 @@ RE_DANGLING_END = re.compile(
 CONTINUATION_MIN_LEN = 80
 
 
-def _is_continuation(prev: str) -> bool:
+# Resume bullets overwhelmingly open with a past-tense action verb. In
+# glyph-less lists this is the only signal that a new bullet has started.
+RE_ACTION_VERB_START = re.compile(
+    r"^(?:[A-Z][a-z]+(?:ed|ted|led|ped|ned|red|sed|ved|wed)\b|"
+    r"(?:Built|Led|Drove|Spearheaded|Oversaw|Wrote|Set|Ran|Made|Won|Grew|Cut|Saved|"
+    r"Managed|Created|Designed|Developed|Engineered|Architected|Implemented|Deployed|"
+    r"Integrated|Optimized|Optimised|Reduced|Improved|Increased|Delivered|Maintained|"
+    r"Collaborated|Mentored|Automated|Migrated|Launched|Configured|Performed|"
+    r"Orchestrated|Streamlined|Established|Coordinated|Researched|Analyzed|Analysed)\b)"
+)
+
+
+def _looks_like_new_bullet(text: str) -> bool:
+    """
+    True when a bare line clearly starts a NEW bullet rather than continuing
+    the previous one.
+
+    Needed for glyph-less bullet lists (common in LinkedIn-style exports),
+    where every bullet is long and unpunctuated, so the wrap heuristic alone
+    would merge an entire job's achievements into one giant paragraph.
+    """
+    t = text.strip()
+    return len(t) >= 35 and bool(RE_ACTION_VERB_START.match(t))
+
+
+def _is_continuation(prev: str, nxt: str = "") -> bool:
     """
     True when `prev` looks like a sentence cut off mid-line by the PDF/DOCX
     text extractor, rather than a finished bullet.
@@ -94,9 +119,14 @@ def _is_continuation(prev: str) -> bool:
     """
     if not prev or RE_TERMINAL.search(prev):
         return False
-    if len(prev) >= CONTINUATION_MIN_LEN:
+    # A dangling comma/conjunction always wins: the sentence is mid-clause.
+    if RE_DANGLING_END.search(prev):
         return True
-    return bool(RE_DANGLING_END.search(prev))
+    # Otherwise a line that opens with an action verb starts a new bullet,
+    # even though the previous one ran long and carried no full stop.
+    if nxt and _looks_like_new_bullet(nxt):
+        return False
+    return len(prev) >= CONTINUATION_MIN_LEN
 
 
 def _looks_like_entry_header(text: str) -> bool:
@@ -149,31 +179,122 @@ RE_LOCATION_SUFFIX = re.compile(
 # Section heading keywords
 # ---------------------------------------------------------------------------
 SECTION_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("summary",       ["summary", "profile", "objective", "about", "overview", "professional summary"]),
-    ("experience",    ["experience", "work experience", "employment", "work history", "professional experience",
-                       "career history", "positions held"]),
-    ("education",     ["education", "academic", "qualification", "degree", "schooling"]),
-    ("skills",        ["skills", "technical skills", "core competencies", "expertise", "technologies",
-                       "tools", "competencies", "key skills", "other", "additional information"]),
-    ("projects",      ["projects", "personal projects", "key projects", "notable projects"]),
-    ("certifications",["certification", "certifications", "licenses", "credentials", "courses"]),
-    ("awards",        ["awards", "honors", "achievements", "recognition"]),
-    ("languages",     ["foreign languages", "language proficiency"]),
-    ("publications",  ["publications", "papers", "research"]),
-    ("volunteer",     ["volunteer", "volunteering", "community service"]),
-    ("references",    ["references", "referees"]),
+    ("summary",       ["summary", "profile", "objective", "about", "about me", "overview",
+                       "professional summary", "career objective", "career summary",
+                       "executive summary", "personal statement", "professional profile",
+                       "career profile", "introduction", "bio"]),
+    ("experience",    ["experience", "work experience", "employment", "work history",
+                       "professional experience", "career history", "positions held",
+                       "employment history", "professional background", "work", "internship",
+                       "internships", "internship experience", "industry experience",
+                       "relevant experience", "career", "professional career", "engagements"]),
+    ("education",     ["education", "academic", "qualification", "qualifications", "degree",
+                       "schooling", "academics", "academic background", "academic qualifications",
+                       "educational background", "education & training", "education and training",
+                       "studies", "academic history"]),
+    ("skills",        ["skills", "technical skills", "core competencies", "expertise",
+                       "technologies", "tools", "competencies", "key skills",
+                       "additional information", "technical proficiencies", "proficiencies",
+                       "tech stack", "technology stack", "skill set", "skillset",
+                       "areas of expertise", "strengths", "core skills", "professional skills",
+                       "tools & technologies", "tools and technologies", "technical expertise",
+                       "it skills", "computer skills", "software skills", "specialties",
+                       "specialisations", "specializations"]),
+    ("projects",      ["projects", "personal projects", "key projects", "notable projects",
+                       "academic projects", "selected projects", "project experience",
+                       "side projects", "portfolio", "major projects", "project work",
+                       "capstone", "capstone project", "open source", "open source contributions"]),
+    ("certifications",["certification", "certifications", "licenses", "licences", "credentials",
+                       "courses", "coursework", "relevant coursework", "training",
+                       "trainings", "professional development", "licenses & certifications",
+                       "certificates", "online courses", "workshops"]),
+    ("awards",        ["awards", "honors", "honours", "achievements", "recognition",
+                       "key achievements", "accomplishments", "awards & honors",
+                       "awards and honours", "scholarships", "accolades", "distinctions",
+                       "extracurricular", "extracurricular activities", "activities"]),
+    ("languages",     ["foreign languages", "language proficiency", "languages known",
+                       "spoken languages", "language skills"]),
+    ("publications",  ["publications", "papers", "research", "research experience",
+                       "research papers", "conference papers", "patents", "presentations"]),
+    ("volunteer",     ["volunteer", "volunteering", "community service", "volunteer experience",
+                       "social work", "community involvement", "leadership",
+                       "positions of responsibility"]),
+    ("references",    ["references", "referees", "references available"]),
+    # Low-value sections. They are parsed so they stop leaking into the section
+    # above them (certifications used to absorb "Hobbies", "Languages", etc.),
+    # and the PDF fitter drops them first when squeezing onto one page.
+    ("interests",     ["interests", "hobbies", "hobbies & interests", "hobbies and interests",
+                       "personal interests", "technical interests", "research interests",
+                       "areas of interest", "extra-curricular activities & interests",
+                       "extra-curricular activities", "extra curricular activities",
+                       "extracurricular activities & interests", "activities & interests",
+                       "personal details", "personal information", "declaration"]),
 ]
+
+# Matched last and only as a whole line, because these words are too generic to
+# risk a prefix match against real content (e.g. "Other duties included ...").
+_WEAK_SECTION_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("skills", ["other", "misc", "miscellaneous", "additional"]),
+]
+
+# A heading is a short line; prefix matching beyond this length is almost always
+# a false positive on a sentence that merely begins with a section word.
+_MAX_HEADING_LEN = 60
+_MAX_PREFIX_HEADING_LEN = 40
 
 
 def _detect_section(line: str) -> Optional[str]:
-    """Return section key if the line looks like a section heading."""
-    clean = line.strip().lower().rstrip(":").strip()
-    if len(clean) > 60:
+    """
+    Return the section key if the line looks like a section heading.
+
+    Matching is deliberately ordered:
+      1. exact match on a known synonym            ("Technical Skills")
+      2. prefix match on a short line              ("Skills & Tools")
+      3. whole-line match on a weak/generic word   ("Other")
+
+    Longest keywords are tried first so that "work experience" is not
+    swallowed by the shorter "work".
+    """
+    raw = line.strip()
+    # 'Tech Stack: MERN Stack, Angular, MongoDB' is CONTENT, not a heading:
+    # a real heading has nothing of substance after the colon. Without this
+    # guard such a line ended the Experience section and swallowed the jobs
+    # below it into Skills.
+    if ":" in raw:
+        after = raw.split(":", 1)[1].strip()
+        if len(after.split()) >= 2:
+            return None
+
+    clean = line.strip().lower().rstrip(":").rstrip("-").strip()
+    # Strip decorative characters some templates wrap headings in.
+    clean = clean.strip("_*•|=~ ").strip()
+    if not clean or len(clean) > _MAX_HEADING_LEN:
         return None
+    # A heading rarely ends in a sentence period or contains sentence commas.
+    if clean.endswith("."):
+        return None
+
+    # 1. Exact synonym match.
     for section_key, keywords in SECTION_KEYWORDS:
-        for kw in keywords:
-            if clean == kw or clean.startswith(kw):
-                return section_key
+        if clean in keywords:
+            return section_key
+
+    # 2. Prefix match, longest keyword first, only on short lines.
+    if len(clean) <= _MAX_PREFIX_HEADING_LEN:
+        candidates: list[tuple[int, str]] = []
+        for section_key, keywords in SECTION_KEYWORDS:
+            for kw in keywords:
+                if clean.startswith(kw):
+                    candidates.append((len(kw), section_key))
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][1]
+
+    # 3. Generic words, whole line only.
+    for section_key, keywords in _WEAK_SECTION_KEYWORDS:
+        if clean in keywords:
+            return section_key
+
     return None
 
 
@@ -211,6 +332,7 @@ def parse_resume(raw_text: str, pdf_metadata: dict | None = None) -> dict:
     languages     = _parse_list_section(sections.get("languages", []))
     publications  = _parse_list_section(sections.get("publications", []))
     volunteer     = _parse_list_section(sections.get("volunteer", []))
+    interests     = _parse_list_section(sections.get("interests", []))
 
     return {
         "name": name,
@@ -226,6 +348,7 @@ def parse_resume(raw_text: str, pdf_metadata: dict | None = None) -> dict:
         "languages": languages,
         "publications": publications,
         "volunteer": volunteer,
+        "interests": interests,
     }
 
 
@@ -273,8 +396,6 @@ def _extract_location(text: str) -> str:
 # Name extraction
 # ---------------------------------------------------------------------------
 
-# ========== BLOCK 1: paste directly ABOVE 'def _extract_name(' ==========
-
 # Job-title words. A line made only of these is a headline, not a person's name.
 RE_TITLE_WORDS = re.compile(
     r"\b(developer|engineer|manager|analyst|designer|architect|consultant|"
@@ -304,11 +425,27 @@ def _looks_like_person_name(line: str) -> bool:
     return True
 
 
+def _header_lines(non_blank_lines: list[str], limit: int = 8) -> list[str]:
+    """
+    The lines above the first section heading. A real name only ever lives
+    here; scanning past it is how 'Artificial Intelligence' (a spaCy PERSON
+    false positive inside a summary) ended up as a candidate's name.
+    """
+    header: list[str] = []
+    for line in non_blank_lines[:limit]:
+        if _detect_section(line.strip()) is not None:
+            break
+        header.append(line.strip())
+    return header
+
+
 def _extract_name(non_blank_lines: list[str], full_text: str, contact: dict) -> str:
+    header = _header_lines(non_blank_lines)
+
+    # spaCy, but ONLY over the header area - never the summary text.
     nlp = _get_nlp()
-    if nlp is not None:
-        snippet = full_text[:400]
-        doc = nlp(snippet)
+    if nlp is not None and header:
+        doc = nlp("\n".join(header[:4]))
         for ent in doc.ents:
             if ent.label_ == "PERSON":
                 candidate = ent.text.strip()
@@ -352,12 +489,9 @@ def _extract_name(non_blank_lines: list[str], full_text: str, contact: dict) -> 
     return "Unknown Candidate"
 
 
-
-
 # ---------------------------------------------------------------------------
 # Title extraction
 # ---------------------------------------------------------------------------
-# ========== BLOCK 2: paste directly ABOVE 'def _extract_title(' ==========
 
 # Availability / notice-period phrases that people paste into their headline.
 # They are not job titles and should not appear in the ATS header line.
@@ -423,7 +557,6 @@ def _extract_title(non_blank_lines: list[str], name: str, contact: dict) -> str:
                 # The line was only an availability note - keep looking.
                 continue
     return ""
-
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +632,45 @@ def _parse_skills(lines: list[str]) -> list[str]:
     return result
 
 
+def _looks_like_job_title(text: str) -> bool:
+    """
+    True when a short bare line reads like a job title rather than prose.
+
+    Used for the date-first layout (LinkedIn exports, many modern templates):
+
+        Jul 2026 - Present
+        Associate Software Engineer     <- title
+        Aurora Forge                    <- company
+        Kathmandu, Nepal - On-site      <- location
+
+    The old parser only looked BACKWARDS for a header, so all three of those
+    lines were swallowed as bullets and the entry ended up with no title.
+    """
+    t = text.strip().rstrip(",;")
+    if not t or len(t) > 70 or RE_TERMINAL.search(t):
+        return False
+    if len(t.split()) > 8:
+        return False
+    return bool(RE_TITLE_WORDS.search(t))
+
+
+def _looks_like_org_name(text: str) -> bool:
+    """True when a short bare line reads like a company/organisation name."""
+    t = text.strip().rstrip(",;")
+    if not t or len(t) > 70 or RE_TERMINAL.search(t):
+        return False
+    words = t.split()
+    if len(words) > 7:
+        return False
+    # Mostly capitalised words, no trailing sentence punctuation.
+    caps = [w for w in words if w[:1].isupper() or w.isupper()]
+    return len(caps) >= max(1, len(words) - 1)
+
+
+RE_TECH_LINE = re.compile(r"^\s*(?:tech(?:nolog(?:y|ies))?\s*stack|tech|stack|built\s+with|tools)\s*:",
+                          re.I)
+
+
 def _parse_experience(lines: list[str]) -> list[dict]:
     """
     Parse the experience section.
@@ -510,8 +682,9 @@ def _parse_experience(lines: list[str]) -> list[dict]:
     """
     entries: list[dict] = []
     current: dict | None = None
-    pending_header: str = ""     # header line seen before its date line
+    pending_headers: list[str] = []   # up to 2 header lines seen before a date
     open_bullet = False          # a bare bullet glyph was just seen
+    backfill = 0                 # bare lines still allowed to fill role/company
 
     def _flush():
         nonlocal current
@@ -544,12 +717,19 @@ def _parse_experience(lines: list[str]) -> list[dict]:
             dates = date_m.group().strip()
             remainder = stripped[:date_m.start()].strip().rstrip("\u2013\u2014-|,").strip()
 
-            # Role/Company frequently sits on the PREVIOUS line
-            if not remainder and pending_header:
-                remainder = pending_header
-            pending_header = ""
+            # Role/Company frequently sits on the PREVIOUS line(s). Some
+            # templates stack them:  Title / Company / Date.
+            role = company = location = ""
+            if not remainder and pending_headers:
+                if len(pending_headers) >= 2 and _looks_like_job_title(pending_headers[-2]):
+                    role = _clean_title(pending_headers[-2])
+                    company = pending_headers[-1]
+                else:
+                    remainder = pending_headers[-1]
+            pending_headers = []
 
-            role, company, location = _split_role_company(remainder)
+            if not (role or company):
+                role, company, location = _split_role_company(remainder)
             current = {
                 "company": company,
                 "role": role,
@@ -557,6 +737,17 @@ def _parse_experience(lines: list[str]) -> list[dict]:
                 "location": location,
                 "bullets": [],
             }
+            # Date-first layout: the role/company lines follow the date line.
+            # Allow the next couple of bare lines to backfill them.
+            if not (role or company):
+                backfill = 3
+            elif not location:
+                # Role/company were read from the lines above the date, so only
+                # the location line (if any) still needs claiming - otherwise it
+                # renders as a bullet: '- Kathmandu, Bagmati, Nepal - On-site'.
+                backfill = 1
+            else:
+                backfill = 0
             continue
 
         clean = _clean_bullet(stripped)
@@ -565,8 +756,35 @@ def _parse_experience(lines: list[str]) -> list[dict]:
 
         # ── Before the first entry: remember as a possible header ──────────
         if current is None:
-            pending_header = clean
+            pending_headers.append(clean)
+            del pending_headers[:-2]
             continue
+
+        # ── Date-first layout: backfill role / company / location ─────────
+        if backfill and not is_bullet:
+            if not current["role"] and _looks_like_job_title(clean):
+                current["role"] = _clean_title(clean)
+                backfill -= 1
+                continue
+            if current["role"] and not current["company"] and _looks_like_org_name(clean):
+                loc_m = RE_LOCATION_SUFFIX.search(clean)
+                if loc_m and loc_m.start() > 0:
+                    current["company"] = clean[: loc_m.start()].strip().rstrip(",|–-").strip()
+                    current["location"] = current["location"] or loc_m.group(0).strip()
+                else:
+                    current["company"] = clean
+                backfill -= 1
+                continue
+            if not current["location"] and len(clean) < 70 and (
+                RE_LOCATION_SUFFIX.search(clean)
+                # 'Kathmandu, Bagmati, Nepal - On-site' has no 2-part suffix,
+                # but a short comma-separated line here is still a location.
+                or ("," in clean and len(clean.split()) <= 8 and not RE_TERMINAL.search(clean))
+            ):
+                current["location"] = clean.strip()
+                backfill -= 1
+                continue
+            backfill = 0
 
         # ── Inside an entry ────────────────────────────────────────────────
         if is_bullet:
@@ -575,14 +793,16 @@ def _parse_experience(lines: list[str]) -> list[dict]:
 
         # Not bulleted: if the previous bullet is still an open sentence,
         # this line is its continuation.
-        if current["bullets"] and _is_continuation(current["bullets"][-1]):
+        if (current["bullets"] and not RE_TECH_LINE.match(clean)
+                and _is_continuation(current["bullets"][-1], clean)):
             current["bullets"][-1] = f"{current['bullets'][-1]} {clean}".strip()
             continue
 
         # Previous bullet closed -> either the next job's header or a
         # plain (unglyphed) bullet.
-        if _looks_like_entry_header(clean):
-            pending_header = clean
+        if _looks_like_entry_header(clean) or _looks_like_job_title(clean):
+            pending_headers.append(clean)
+            del pending_headers[:-2]
         else:
             current["bullets"].append(clean)
 
@@ -637,9 +857,42 @@ def _split_compound_education(line: str) -> list[str]:
     return [line]
 
 
+RE_DEGREE_WORDS = re.compile(
+    r"\b(?:bachelor|master|b\.?\s?tech|m\.?\s?tech|b\.?\s?e\.?|m\.?\s?e\.?|b\.?\s?sc|m\.?\s?sc|"
+    r"b\.?\s?a\.?|m\.?\s?a\.?|b\.?\s?com|mba|bba|bca|mca|ph\.?\s?d|doctorate|diploma|"
+    r"higher\s+secondary|secondary\s+education|intermediate|associate\s+degree|"
+    r"10th|12th|\+2|slc|see|hsc|ssc)\b",
+    re.I,
+)
+
+
+def _looks_like_degree(text: str) -> bool:
+    """
+    True when a line names a qualification rather than a school.
+
+    Degree-first layouts put the qualification above the institution:
+        Bachelor of Engineering (BE) in Computer Engineering
+        2023 - Present
+        Advance College of Engineering and Management, Kathmandu
+    Treating line 1 as the institution left the real college unrecorded and
+    produced the 'education entry has no institution name' warning.
+    """
+    t = text.strip()
+    if not t or len(t) > 90:
+        return False
+    if re.search(r"\b(?:university|college|institute|school|academy|campus)\b", t, re.I):
+        # 'Bachelor of Technology, XYZ Institute' names both - treat as degree
+        # only when the qualification word comes first.
+        deg = RE_DEGREE_WORDS.search(t)
+        org = re.search(r"\b(?:university|college|institute|school|academy|campus)\b", t, re.I)
+        return bool(deg and org and deg.start() < org.start())
+    return bool(RE_DEGREE_WORDS.search(t))
+
+
 def _parse_education(lines: list[str]) -> list[dict]:
     entries: list[dict] = []
     current: dict | None = None
+    edu_backfill = 0             # bare lines still allowed to fill institution
 
     expanded: list[str] = []
     for raw_line in lines:
@@ -655,11 +908,29 @@ def _parse_education(lines: list[str]) -> list[dict]:
         is_bullet = bool(RE_BULLET_PREFIX.match(stripped))
 
         if date_m and not is_bullet:
-            if current:
-                entries.append(current)
             dates_text = date_m.group().strip()
             remainder = stripped[:date_m.start()].strip().rstrip("–—-|,").strip()
             remainder = _balance_parens(remainder)
+
+            # Date-only line directly under an entry that still has no dates:
+            #   Panipat Institute of Engineering and Technology
+            #   Bachelor of Technology in Computer Science
+            #   Aug 2022 - May 2026          <- belongs to the entry above
+            # Starting a new entry here produced a phantom record with no
+            # institution name, which is what triggered the parse warning.
+            if not remainder and current and not current["dates"]:
+                current["dates"] = dates_text
+                if gpa_m and not current["gpa"]:
+                    current["gpa"] = gpa_m.group(1)
+                # Degree-first layout, institution still to come:
+                #   Bachelor of Engineering (BE) in Computer Engineering
+                #   2023 - Present
+                #   Advance College of Engineering and Management, Kathmandu
+                edu_backfill = 2 if not current["institution"] else 0
+                continue
+
+            if current:
+                entries.append(current)
 
             degree, institution, location = _split_degree_institution(remainder)
             current = {
@@ -670,8 +941,38 @@ def _parse_education(lines: list[str]) -> list[dict]:
                 "gpa": gpa_m.group(1) if gpa_m else "",
                 "bullets": [],
             }
+        elif (current is not None and not is_bullet and _looks_like_degree(stripped)
+              and current["institution"] and (current["dates"] or current["degree"])):
+            # A new qualification line while the current entry is already
+            # complete starts the NEXT education entry, instead of being
+            # appended as a bullet of the previous one.
+            entries.append(current)
+            clean_p = _clean_bullet(stripped)
+            edu_backfill = 2
+            current = {
+                "institution": "",
+                "degree": clean_p,
+                "dates": "",
+                "location": "",
+                "gpa": gpa_m.group(1) if gpa_m else "",
+                "bullets": [],
+            }
+        elif current is not None and edu_backfill and not is_bullet and not current["institution"]:
+            # The line right after a bare date line is the institution.
+            edu_backfill -= 1
+            loc_m = RE_LOCATION_SUFFIX.search(stripped)
+            if loc_m and loc_m.start() > 0:
+                current["institution"] = stripped[: loc_m.start()].strip().rstrip(",|-").strip()
+                if not current["location"]:
+                    current["location"] = loc_m.group(0).strip()
+            else:
+                current["institution"] = _clean_bullet(stripped)
         elif current is not None:
-            bullets = _split_inline_bullets(stripped)
+            parts = _split_inline_bullets(stripped) or []
+            # A plain line comes back as a single-item list, which used to be
+            # appended as a bullet - that is how the degree and location lines
+            # ended up as bullets instead of filling their own fields.
+            bullets = parts if (is_bullet or len(parts) > 1) else []
             if bullets:
                 current["bullets"].extend(bullets)
             elif gpa_m and not current["gpa"]:
@@ -684,7 +985,11 @@ def _parse_education(lines: list[str]) -> list[dict]:
                     line_loc = loc_m.group(0).strip()
                     line_text = stripped[:loc_m.start()].strip().rstrip(",|–-")
 
-                if not current["degree"]:
+                if line_loc and not line_text and not current["location"]:
+                    # A bare 'City, Region' line belongs in location, not in
+                    # the bullet list under the degree.
+                    current["location"] = line_loc
+                elif not current["degree"]:
                     current["degree"] = line_text
                     if line_loc and not current["location"]:
                         current["location"] = line_loc
@@ -699,9 +1004,15 @@ def _parse_education(lines: list[str]) -> list[dict]:
         else:
             if stripped:
                 clean_p = _clean_bullet(stripped)
+                # Degree-first layout: this line is the qualification, and the
+                # institution arrives a line or two later.
+                as_degree = _looks_like_degree(clean_p)
+                if as_degree:
+                    edu_backfill = 2
                 current = {
-                    "institution": clean_p,
-                    "degree": "",
+                    "institution": "" if as_degree else clean_p,
+                    "_degree_first": as_degree,
+                    "degree": clean_p if as_degree else "",
                     "dates": "",
                     "location": "",
                     "gpa": gpa_m.group(1) if gpa_m else "",
@@ -711,21 +1022,48 @@ def _parse_education(lines: list[str]) -> list[dict]:
     if current:
         entries.append(current)
 
+    for entry in entries:
+        entry.pop("_degree_first", None)
+
     return entries
 
 
 def _split_degree_institution(text: str) -> tuple[str, str, str]:
-    location = ""
-    loc_m = RE_LOCATION_SUFFIX.search(text)
-    if loc_m:
-        location = loc_m.group(0).strip()
-        text = text[:loc_m.start()].strip().rstrip(",|–-")
+    """
+    Split 'Degree - Institution, Location' into its three parts.
 
-    for sep in [" | ", " – ", " — ", " - ", " @ ", " at ", " / "]:
+    The degree/institution separator is handled BEFORE the location suffix.
+    Doing it the other way round let the location regex swallow the school:
+    '10th Standard - Mascot Academy, Nepal' lost 'Mascot Academy' and kept
+    only '10th Standard -' as the institution.
+    """
+    separators = [" | ", " \u2013 ", " \u2014 ", " - ", " @ ", " at ", " / "]
+
+    degree = ""
+    rest = text
+    for sep in separators:
         if sep in text:
-            parts = [p.strip() for p in text.split(sep, 1)]
-            return parts[0], parts[1] if len(parts) > 1 else "", location
-    return "", text, location
+            head, tail = [p.strip() for p in text.split(sep, 1)]
+            degree, rest = head, tail
+            break
+
+    location = ""
+    loc_m = RE_LOCATION_SUFFIX.search(rest)
+    # 'DAV RB Kedia HSS School, Nepal' looks like 'Name, Country' to the
+    # location regex. If the match still names an institution it is part of
+    # the school name, not the city.
+    if loc_m and re.search(r"\b(?:school|college|university|institute|academy|campus|hss)\b",
+                           loc_m.group(0), re.I):
+        loc_m = None
+    if loc_m and loc_m.start() > 0:
+        location = loc_m.group(0).strip()
+        rest = rest[:loc_m.start()].strip().rstrip(",|\u2013-")
+    elif loc_m and not degree:
+        # The whole line is just a location.
+        location = loc_m.group(0).strip()
+        rest = ""
+
+    return degree, rest, location
 
 
 def _parse_projects(lines: list[str]) -> list[dict]:
@@ -743,12 +1081,36 @@ def _parse_projects(lines: list[str]) -> list[dict]:
         is_bullet = bool(RE_BULLET_PREFIX.match(stripped)) or ("●" in stripped or "•" in stripped)
         date_m = RE_DATE_RANGE.search(stripped)
 
-        if not is_bullet and (current is None or date_m or re.search(r"\([a-zA-Z0-9\.\-]+\.(?:com|org|io|net|app|dev)\)", stripped)):
+        # Many resumes label each project with a round bullet and use dashes
+        # for its achievements:
+        #     • MedBridge - Healthcare Resource Exchange Platform
+        #     - Built a multi-hospital platform ...
+        # Treating every glyph line as an achievement collapsed all projects
+        # into one entry, so a round bullet starts a NEW project here.
+        is_project_header = bool(re.match(r"^\s*[•●]\s*\S", stripped)) and len(stripped) < 110
+        # Unbulleted 'Name - Subtitle | Tech' header lines do the same job.
+        if not is_bullet and current is not None and not date_m:
+            is_project_header = is_project_header or (
+                _looks_like_entry_header(stripped)
+                and len(stripped) < 110
+                and stripped[:1].isupper()
+                and not RE_DANGLING_END.search(stripped)
+            )
+
+        if is_project_header or (not is_bullet and (
+                current is None or date_m
+                or re.search(r"\([a-zA-Z0-9\.\-]+\.(?:com|org|io|net|app|dev)\)", stripped))):
             if current:
                 entries.append(current)
             dates = date_m.group().strip() if date_m else ""
             name_part = stripped[:date_m.start()].strip() if date_m else stripped
             name_part = _clean_bullet(name_part)
+
+            # A bare date line under a named project belongs to that project,
+            # it does not start a new (nameless) one.
+            if date_m and not name_part and current is not None and not current["dates"]:
+                current["dates"] = dates
+                continue
             current = {"name": name_part, "tech": "", "dates": dates, "bullets": []}
         elif current is not None:
             clean_p = _clean_bullet(stripped)
@@ -757,7 +1119,7 @@ def _parse_projects(lines: list[str]) -> list[dict]:
             if re.search(r"\btech(?:nolog(?:y|ies))?s?:|stack:|built with:|using:", stripped, re.I):
                 current["tech"] = clean_p
             elif (not is_bullet and current["bullets"]
-                  and _is_continuation(current["bullets"][-1])):
+                  and _is_continuation(current["bullets"][-1], clean_p)):
                 # continuation of a bullet wrapped across extracted lines
                 current["bullets"][-1] = f"{current['bullets'][-1]} {clean_p}".strip()
             else:
@@ -765,6 +1127,24 @@ def _parse_projects(lines: list[str]) -> list[dict]:
 
     if current:
         entries.append(current)
+
+    entries = [e for e in entries if (e.get("name") or "").strip() or e.get("bullets")]
+
+    # A project whose title is repeated by the layout (title line, then the
+    # same title again above its bullets) must not appear twice.
+    merged: list[dict] = []
+    for entry in entries:
+        key = (entry.get("name") or "").strip().lower()
+        if merged and key and key == (merged[-1].get("name") or "").strip().lower():
+            prev = merged[-1]
+            prev["dates"] = prev.get("dates") or entry.get("dates", "")
+            prev["tech"] = prev.get("tech") or entry.get("tech", "")
+            for b in entry.get("bullets", []):
+                if b not in prev["bullets"]:
+                    prev["bullets"].append(b)
+            continue
+        merged.append(entry)
+    entries = merged
 
     return entries
 
