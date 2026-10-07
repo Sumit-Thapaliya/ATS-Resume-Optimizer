@@ -91,6 +91,10 @@ ALLOWED_SUFFIXES = {".pdf", ".docx"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "20")) * 1024 * 1024
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 
+# The machine API (/v1/format/pdf) is single-page by contract: callers cannot
+# request more, and the value is not configurable at request time.
+API_PDF_PAGES = 1
+
 # Write the structured parse result to output/<job_id>_resume.json (default on).
 SAVE_RESUME_JSON = os.getenv("SAVE_RESUME_JSON", "true").strip().lower() in ("1", "true", "yes", "on")
 
@@ -368,6 +372,35 @@ def _run_pipeline(
         raise HTTPException(status_code=500, detail=f"Unexpected error: {exc}")
 
 
+def _force_single_page(pdf_path: Path, job_id: str) -> None:
+    """
+    Hard guarantee for /v1/format/pdf: the response is always exactly 1 page.
+
+    generate_resume_pdf() already tries to fit the content by pruning and
+    compacting, but its own fallback admits defeat and emits a longer document
+    when nothing fits. The machine API makes no such concession, so anything
+    past page 1 is dropped here.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(str(pdf_path))
+        if len(reader.pages) <= 1:
+            return
+
+        logger.warning(
+            "[%s] Generator produced %d pages; truncating to 1 for the API contract.",
+            job_id, len(reader.pages),
+        )
+        writer = PdfWriter()
+        writer.add_page(reader.pages[0])
+        with open(pdf_path, "wb") as handle:
+            writer.write(handle)
+    except Exception:
+        # Never fail the request over this safety net.
+        logger.exception("[%s] Single-page truncation failed; sending as generated.", job_id)
+
+
 async def _read_upload(file: UploadFile) -> tuple[str, bytes]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
@@ -476,10 +509,10 @@ async def format_resume(
 
 @app.post(
     "/v1/format/pdf",
-    summary="[API] Upload a resume, receive the ATS PDF (requires X-API-Key)",
+    summary="[API] Upload a resume, receive a single-page ATS PDF (requires X-API-Key)",
     response_class=FileResponse,
     responses={
-        200: {"content": {"application/pdf": {}}, "description": "ATS-formatted PDF"},
+        200: {"content": {"application/pdf": {}}, "description": "ATS-formatted PDF — always exactly 1 page"},
         401: {"description": "Missing or invalid API key"},
         415: {"description": "Unsupported file type (PDF and DOCX only)"},
         422: {"description": "File has no extractable text (e.g. scanned image)"},
@@ -490,19 +523,23 @@ async def format_resume_pdf(
     request: Request,
     file: UploadFile = File(..., description="Resume file (.pdf or .docx)"),
     watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text (always stamped)"),
-    max_pages: int = Form(1, description="Page budget, 1-5 (default: 1)"),
     _key: str = Depends(require_api_key),
 ):
     enforce_rate_limit(request)
 
     job_id = uuid.uuid4().hex
     filename, contents = await _read_upload(file)
+    # This API route is single-page by contract. No max_pages field is accepted;
+    # whatever the input resume looks like, the response is always 1 page.
     output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
         watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
-        watermark_opacity=WATERMARK_OPACITY, max_pages=max_pages,
+        watermark_opacity=WATERMARK_OPACITY, max_pages=API_PDF_PAGES,
         generate_pdf=True,
     )
+
+    # Safety net: enforce the 1-page contract even if the generator overflowed.
+    _force_single_page(output_path, job_id)
 
     logger.info("[%s] API done — returning PDF '%s'", job_id, download_name)
     headers = {
