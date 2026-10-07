@@ -96,6 +96,7 @@ class ResumeData(BaseModel):
     projects: list[ProjectEntry] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
     awards: list[str] = Field(default_factory=list)
+    interests: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
 
 
@@ -304,8 +305,14 @@ def build_warnings(parsed: dict, data: ResumeData) -> list[str]:
     if not data.basics.email and not data.basics.phone:
         w.append("No contact details detected.")
     if not data.work:
-        w.append("No work experience entries detected - the section may use an "
-                 "unrecognised date format or layout.")
+        # A student CV with only projects legitimately has no work history;
+        # calling that a parse problem is misleading, so say what it is.
+        if data.projects:
+            w.append("No work experience section found - this resume lists "
+                     "projects only.")
+        else:
+            w.append("No work experience entries detected - the section may use an "
+                     "unrecognised date format or layout.")
     elif any(not e.position for e in data.work):
         n = sum(1 for e in data.work if not e.position)
         w.append(f"{n} of {len(data.work)} work entries have no job title.")
@@ -402,6 +409,7 @@ def to_resume_json(parsed: dict) -> ResumeJSON:
         projects=projects,
         certifications=[str(c).strip() for c in (parsed.get("certifications") or []) if str(c).strip()],
         awards=[str(a).strip() for a in (parsed.get("awards") or []) if str(a).strip()],
+        interests=[str(i).strip() for i in (parsed.get("interests") or []) if str(i).strip()],
         languages=[str(l).strip() for l in (parsed.get("languages") or []) if str(l).strip()],
     )
 
