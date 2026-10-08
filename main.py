@@ -509,7 +509,8 @@ async def format_resume(
 
 @app.post(
     "/v1/format/pdf",
-    summary="[API] Upload a resume, receive a single-page ATS PDF (requires X-API-Key)",
+    summary="[API] Upload a resume, receive a single-page ATS PDF "
+            "(send no_watermark=true for an unstamped copy; requires X-API-Key)",
     response_class=FileResponse,
     responses={
         200: {"content": {"application/pdf": {}}, "description": "ATS-formatted PDF — always exactly 1 page"},
@@ -522,7 +523,13 @@ async def format_resume(
 async def format_resume_pdf(
     request: Request,
     file: UploadFile = File(..., description="Resume file (.pdf or .docx)"),
-    watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text (always stamped)"),
+    watermark_text: str = Form(WATERMARK_TEXT, description="Watermark text"),
+    no_watermark: bool = Form(
+        False,
+        description="Send true for a clean, unstamped PDF (e.g. the copy a "
+                    "recruiter downloads). Defaults to false, so the brand "
+                    "stamp is applied unless explicitly disabled.",
+    ),
     _key: str = Depends(require_api_key),
 ):
     enforce_rate_limit(request)
@@ -533,7 +540,8 @@ async def format_resume_pdf(
     # whatever the input resume looks like, the response is always 1 page.
     output_path, upload_path, json_path, download_name = _run_pipeline(
         job_id, filename, contents,
-        watermark=WATERMARK_ENABLED, watermark_text=watermark_text,
+        watermark=WATERMARK_ENABLED and not no_watermark,
+        watermark_text=watermark_text,
         watermark_opacity=WATERMARK_OPACITY, max_pages=API_PDF_PAGES,
         generate_pdf=True,
     )
@@ -541,7 +549,10 @@ async def format_resume_pdf(
     # Safety net: enforce the 1-page contract even if the generator overflowed.
     _force_single_page(output_path, job_id)
 
-    logger.info("[%s] API done — returning PDF '%s'", job_id, download_name)
+    logger.info(
+        "[%s] API done — returning PDF '%s' (watermark=%s)",
+        job_id, download_name, not no_watermark,
+    )
     headers = {
         "X-Job-Id": job_id,
         "X-Service-Version": app.version,
