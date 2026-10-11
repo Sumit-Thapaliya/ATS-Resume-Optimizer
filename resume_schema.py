@@ -48,6 +48,10 @@ class Basics(BaseModel):
     phone: str = ""
     url: str = ""
     summary: str = ""
+    # Hosted link to the photo extracted from the uploaded resume, if any.
+    # Stored relative ("/v1/media/<job_id>/photo.jpg"); API responses upgrade
+    # it to a full URL. None when the resume has no embedded photo.
+    photo: Optional[str] = None
     location: Location = Field(default_factory=Location)
     profiles: list[Profile] = Field(default_factory=list)
 

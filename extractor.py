@@ -87,6 +87,123 @@ def extract_metadata(pdf_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Photo / image extraction
+# ---------------------------------------------------------------------------
+# Headshots ride along inside resume files as embedded images. We pull out the
+# LARGEST web-renderable image (photos are always the biggest; icons, bullets
+# and divider lines are tiny) and save it to disk, so the JSON can reference
+# it by URL instead of base64.
+
+_PHOTO_MIME = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+}
+_MIN_PHOTO_DIM   = 60      # px — anything smaller is an icon/bullet/line
+_MIN_PHOTO_BYTES = 1200    # bytes — skip 1-px spacers etc.
+
+
+def _photo_mime(ext: str) -> str | None:
+    return _PHOTO_MIME.get(ext.lower())
+
+
+def _photo_ext_allowed(ext: str) -> bool:
+    return ext.lower() in _PHOTO_MIME
+
+
+def extract_photo_from_pdf(pdf_path: str, out_base: str) -> str | None:
+    """
+    Extract the largest embedded image (the headshot) from a PDF.
+
+    Args:
+        pdf_path: Path to the source PDF.
+        out_base: Output path WITHOUT extension; the correct extension is
+                  appended based on the image's real format.
+
+    Returns:
+        The path actually written (e.g. '<out_base>.jpg') or None if the PDF
+        contains no usable photo. Never raises.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return None
+
+    best: tuple[int, int] | None = None   # (pixel_area, xref)
+    try:
+        for page in doc:
+            for img in page.get_images(full=True):
+                xref, width, height = img[0], img[2], img[3]
+                if width < _MIN_PHOTO_DIM or height < _MIN_PHOTO_DIM:
+                    continue
+                area = width * height
+                if best is None or area > best[0]:
+                    best = (area, xref)
+        if best is None:
+            return None
+
+        xref = best[1]
+        info = doc.extract_image(xref)
+        ext = (info.get("ext") or "").lower()
+        if ext == "jpeg":
+            ext = "jpg"
+
+        if _photo_ext_allowed(ext):
+            out = f"{out_base}.{ext}"
+            with open(out, "wb") as fh:
+                fh.write(info["image"])
+            return out
+
+        # Unusual container (jp2/jpx/jxr/...): decode and re-save as PNG.
+        pix = fitz.Pixmap(doc, xref)
+        if pix.colorspace is not None and pix.colorspace.n > 3:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+        out = f"{out_base}.png"
+        pix.save(out)
+        return out
+    except Exception:
+        return None
+    finally:
+        doc.close()
+
+
+def extract_photo_from_docx(docx_path: str, out_base: str) -> str | None:
+    """
+    Extract the largest embedded image from a Word document.
+
+    Same contract as extract_photo_from_pdf. Never raises.
+    """
+    try:
+        doc = Document(docx_path)
+    except Exception:
+        return None
+
+    best: tuple[int, bytes, str] | None = None   # (size, blob, ext)
+    try:
+        for part in doc.part.package.parts:
+            ctype = getattr(part, "content_type", "") or ""
+            if not ctype.startswith("image/"):
+                continue
+            ext = ctype.split("/", 1)[1].split("+")[0].lower()
+            if ext == "jpeg":
+                ext = "jpg"
+            if not _photo_ext_allowed(ext):
+                continue          # skip EMF/WMF/SVG — browsers can't <img> them
+            blob = part.blob
+            if len(blob) < _MIN_PHOTO_BYTES:
+                continue
+            if best is None or len(blob) > best[0]:
+                best = (len(blob), blob, ext)
+        if best is None:
+            return None
+        out = f"{out_base}.{best[2]}"
+        with open(out, "wb") as fh:
+            fh.write(best[1])
+        return out
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # DOCX (python-docx)
 # ---------------------------------------------------------------------------
 

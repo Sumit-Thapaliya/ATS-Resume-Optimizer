@@ -11,6 +11,7 @@ Routes:
   GET  /            → serve the frontend HTML
   POST /process     → accept PDF/DOCX, return reformatted ATS PDF   (web UI)
   POST /v1/format   → parse PDF/DOCX and return structured JSON  (machine-to-machine)
+  GET  /v1/media/{job_id}/photo.{ext} → photo extracted from an upload (public)
   GET  /health      → liveness probe
   GET  /v1/health   → liveness probe (public, no key)
   GET  /v1/parse/{job_id} → the extracted JSON for a job (only after /v1/format)
@@ -54,6 +55,7 @@ from starlette.background import BackgroundTask
 from extractor import (
     extract_text_from_pdf, extract_metadata,
     extract_text_from_docx, extract_metadata_from_docx,
+    extract_photo_from_pdf, extract_photo_from_docx,
 )
 from parser import parse_resume, _get_nlp
 from generator import generate_resume_pdf
@@ -305,6 +307,24 @@ def _run_pipeline(
                 ),
             )
 
+        # ── Photo (optional side artifact) ────────────────────────────────────
+        # If the resume carries a headshot, keep it on disk so the JSON can
+        # reference it by URL. Extraction failure must NEVER fail the request.
+        photo_path: Path | None = None
+        try:
+            photo_base = str(OUTPUT_DIR / f"{job_id}_photo")
+            found = (
+                extract_photo_from_docx(str(upload_path), photo_base)
+                if suffix == ".docx"
+                else extract_photo_from_pdf(str(upload_path), photo_base)
+            )
+            if found:
+                photo_path = Path(found)
+                logger.info("[%s] Photo extracted → %s (%d bytes)",
+                            job_id, photo_path.name, photo_path.stat().st_size)
+        except Exception:
+            logger.exception("[%s] Photo extraction failed (ignored)", job_id)
+
         # ── Parse ─────────────────────────────────────────────────────────────
         logger.info("[%s] Parsing …", job_id)
         try:
@@ -325,6 +345,10 @@ def _run_pipeline(
         if SAVE_RESUME_JSON:
             try:
                 doc = to_resume_json(parsed)
+                if photo_path is not None:
+                    # Relative on disk (host-independent); API routes upgrade
+                    # it to a full URL when they serve this JSON.
+                    doc.raw_resume_data.basics.photo = f"/v1/media/{job_id}/photo{photo_path.suffix}"
                 json_path = OUTPUT_DIR / f"{job_id}_resume.json"
                 json_path.write_text(
                     json.dumps(prune_empty(doc.model_dump()), indent=2, ensure_ascii=False),
@@ -489,6 +513,10 @@ async def format_resume(
         _safe_remove(output_path)
         raise HTTPException(status_code=500, detail="Stored JSON is unreadable.")
 
+    # basics.photo is stored relative on disk; hand back a full URL so the
+    # frontend can drop it straight into <img src="...">.
+    _inject_photo_url(request, data)
+
     logger.info("[%s] API done — returning JSON", job_id)
     headers = {
         "X-Job-Id": job_id,
@@ -620,9 +648,77 @@ async def fetch_resume_json(
         logger.exception("[%s] stored JSON unreadable", job_id)
         raise HTTPException(status_code=500, detail="Stored JSON is unreadable.")
 
+    _inject_photo_url(request, data)
+
     return JSONResponse(
         content=data,
         headers={"X-Job-Id": job_id, "X-Service-Version": app.version},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route: photo extracted from an upload — public by design
+# ---------------------------------------------------------------------------
+# Browsers cannot attach an X-API-Key header to <img src="..."> requests, so
+# this route is unauthenticated. The 32-hex job id acts as the unguessable
+# capability token in the URL.
+
+_PHOTO_MIME = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+}
+
+
+_PHOTO_URL_RE = re.compile(
+    r"/v1/media/(?P<job_id>[0-9a-f]{32})/photo\.(?P<ext>jpg|jpeg|png|webp|gif|bmp)"
+)
+
+
+def _inject_photo_url(request: Request, data: dict) -> None:
+    """
+    Upgrade basics.photo from the stored relative path ("/v1/media/<id>/photo.jpg")
+    to a full URL ("https://ats-resume-api-....onrender.com/v1/media/<id>/photo.jpg")
+    in an API response. Drops the field if the photo file no longer exists
+    (Render Free storage is ephemeral).
+    """
+    basics = (data.get("raw_resume_data") or {}).get("basics")
+    if not isinstance(basics, dict):
+        return
+    rel = basics.get("photo")
+    if not isinstance(rel, str):
+        basics.pop("photo", None)
+        return
+    m = _PHOTO_URL_RE.fullmatch(rel)
+    if not m:
+        basics.pop("photo", None)
+        return
+    # File on disk is <job_id>_photo.<ext>; the URL hides the underscore name.
+    photo_file = OUTPUT_DIR / f"{m.group('job_id')}_photo.{m.group('ext')}"
+    if not photo_file.is_file():
+        basics.pop("photo", None)
+        return
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    basics["photo"] = f"{proto}://{host}{rel}"
+
+
+@app.get(
+    "/v1/media/{job_id}/photo.{ext}",
+    summary="[Public] Download the photo extracted from an uploaded resume",
+    responses={
+        404: {"description": "Unknown job id, bad extension, or no photo stored"},
+    },
+)
+async def serve_resume_photo(job_id: str, ext: str):
+    if not _JOB_ID_RE.fullmatch(job_id) or ext.lower() not in _PHOTO_MIME:
+        raise HTTPException(status_code=404, detail="Unknown media path.")
+    photo_file = OUTPUT_DIR / f"{job_id}_photo.{ext.lower()}"
+    if not photo_file.is_file():
+        raise HTTPException(status_code=404, detail="No photo stored for this job id.")
+    return FileResponse(
+        path=str(photo_file),
+        media_type=_PHOTO_MIME[ext.lower()],
+        headers={"Cache-Control": "private, max-age=3600"},
     )
 
 
